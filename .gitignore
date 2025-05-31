@@ -1,2 +1,5 @@
 venv/
 .idea/
+final_model.pkl
+model.pkl
+__pycache__/
