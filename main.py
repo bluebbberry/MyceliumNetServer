@@ -1,175 +1,382 @@
 #!/usr/bin/env python3
+"""
+Simplified Gossip Learning for Music Recommendations
+No complex JSON serialization - just basic Python types
+"""
+
 import json
 import sys
 import time
-import signal
-from gossip import GossipLearning
+import threading
+import socket
+import random
+import pickle
+from dataclasses import dataclass
+from typing import List, Dict, Tuple, Optional
 
 
-class MusicGossipApp:
-    def __init__(self):
-        self.gossip_learner = None
-        self.config = None
-        self.load_config()
+@dataclass
+class Config:
+    """Simple configuration class"""
+    host: str = "localhost"
+    port: int = 8000
+    peers: List[Tuple[str, int]] = None
+    data_file: str = "ratings.csv"
+    gossip_rounds: int = 10
+    gossip_interval: float = 2.0
 
-    def load_config(self):
-        """Load configuration from config.json"""
+    @classmethod
+    def load(cls, filename="config.json"):
         try:
-            with open("config.json", 'r') as f:
-                self.config = json.load(f)
-            print(f"Loaded config: Node {self.config['host']}:{self.config['port']}")
-        except FileNotFoundError:
-            print("Error: config.json not found!")
-            print("Please create a config.json file with your node configuration.")
-            sys.exit(1)
+            with open(filename, 'r') as f:
+                data = json.load(f)
+            return cls(
+                host=data.get("host", "localhost"),
+                port=data.get("port", 8000),
+                peers=[tuple(p) for p in data.get("peers", [])],
+                data_file=data.get("data_file", "ratings.csv"),
+                gossip_rounds=data.get("gossip_rounds", 10),
+                gossip_interval=data.get("gossip_interval", 2.0)
+            )
         except Exception as e:
             print(f"Error loading config: {e}")
-            sys.exit(1)
+            return cls()
 
-    def setup_gossip_learner(self):
-        """Initialize GOSSIP learner with config"""
-        self.gossip_learner = GossipLearning(
-            host=self.config["host"],
-            port=self.config["port"],
-            peers=[(peer[0], peer[1]) for peer in self.config["peers"]]
-        )
 
-    def run(self):
-        """Main application run loop"""
-        print("=" * 50)
-        print("🎵 GOSSIP Music Recommendation System")
-        print("=" * 50)
+class SimpleModel:
+    """Very simple collaborative filtering model"""
 
-        # Setup
-        self.setup_gossip_learner()
+    def __init__(self):
+        self.user_ratings = {}  # user_id -> {song_id: rating}
+        self.user_averages = {}  # user_id -> average_rating
+        self.song_averages = {}  # song_id -> average_rating
+        self.global_average = 0.0
+        self.is_trained = False
+
+    def load_data(self, filename):
+        """Load CSV data: user_id,song_id,rating"""
+        try:
+            with open(filename, 'r') as f:
+                lines = f.readlines()[1:]  # Skip header
+
+            for line in lines:
+                parts = line.strip().split(',')
+                if len(parts) >= 3:
+                    user_id = int(parts[0])
+                    song_id = int(parts[1])
+                    rating = float(parts[2])
+
+                    if user_id not in self.user_ratings:
+                        self.user_ratings[user_id] = {}
+                    self.user_ratings[user_id][song_id] = rating
+
+            self.train()
+            return True
+
+        except Exception as e:
+            print(f"Error loading data: {e}")
+            return False
+
+    def train(self):
+        """Train the model - compute averages"""
+        if not self.user_ratings:
+            return False
+
+        # Compute user averages
+        for user_id, ratings in self.user_ratings.items():
+            self.user_averages[user_id] = sum(ratings.values()) / len(ratings)
+
+        # Compute song averages
+        song_ratings = {}
+        for user_id, ratings in self.user_ratings.items():
+            for song_id, rating in ratings.items():
+                if song_id not in song_ratings:
+                    song_ratings[song_id] = []
+                song_ratings[song_id].append(rating)
+
+        for song_id, ratings in song_ratings.items():
+            self.song_averages[song_id] = sum(ratings) / len(ratings)
+
+        # Global average
+        all_ratings = []
+        for ratings in self.user_ratings.values():
+            all_ratings.extend(ratings.values())
+        self.global_average = sum(all_ratings) / len(all_ratings)
+
+        self.is_trained = True
+        return True
+
+    def predict(self, user_id, song_id):
+        """Simple prediction: blend user avg, song avg, global avg"""
+        if not self.is_trained:
+            return None
+
+        user_avg = self.user_averages.get(user_id, self.global_average)
+        song_avg = self.song_averages.get(song_id, self.global_average)
+
+        # Simple weighted average
+        prediction = (user_avg + song_avg + self.global_average) / 3.0
+        return max(1.0, min(5.0, prediction))  # Clamp to 1-5 range
+
+    def get_parameters(self):
+        """Get model parameters as simple Python dict"""
+        return {
+            'user_averages': dict(self.user_averages),
+            'song_averages': dict(self.song_averages),
+            'global_average': float(self.global_average)
+        }
+
+    def update_parameters(self, other_params):
+        """Average our parameters with another node's parameters"""
+        if not other_params:
+            return False
+
+        try:
+            # Average user averages
+            for user_id, avg in other_params.get('user_averages', {}).items():
+                user_id = int(user_id)
+                if user_id in self.user_averages:
+                    self.user_averages[user_id] = (self.user_averages[user_id] + avg) / 2.0
+                else:
+                    self.user_averages[user_id] = avg
+
+            # Average song averages
+            for song_id, avg in other_params.get('song_averages', {}).items():
+                song_id = int(song_id)
+                if song_id in self.song_averages:
+                    self.song_averages[song_id] = (self.song_averages[song_id] + avg) / 2.0
+                else:
+                    self.song_averages[song_id] = avg
+
+            # Average global average
+            other_global = other_params.get('global_average', self.global_average)
+            self.global_average = (self.global_average + other_global) / 2.0
+
+            return True
+        except Exception as e:
+            print(f"Error updating parameters: {e}")
+            return False
+
+
+class SimpleNetwork:
+    """Simple TCP networking without complex serialization"""
+
+    def __init__(self, host, port, peers):
+        self.host = host
+        self.port = port
+        self.peers = peers
+        self.running = False
+        self.server_socket = None
+        self.message_handler = None
+
+    def set_handler(self, handler):
+        self.message_handler = handler
+
+    def start_server(self):
+        """Start server in background thread"""
+
+        def server_loop():
+            try:
+                self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self.server_socket.bind((self.host, self.port))
+                self.server_socket.listen(5)
+                self.running = True
+                print(f"Server listening on {self.host}:{self.port}")
+
+                while self.running:
+                    try:
+                        client, addr = self.server_socket.accept()
+                        threading.Thread(target=self._handle_client, args=(client, addr), daemon=True).start()
+                    except:
+                        if self.running:
+                            print("Server accept error")
+                        break
+            except Exception as e:
+                print(f"Server error: {e}")
+
+        threading.Thread(target=server_loop, daemon=True).start()
+        time.sleep(0.5)  # Give server time to start
+
+    def _handle_client(self, client, addr):
+        """Handle incoming connection"""
+        try:
+            data = client.recv(4096)
+            if data:
+                # Use pickle for reliable serialization
+                message = pickle.loads(data)
+
+                if self.message_handler:
+                    response = self.message_handler(message)
+                    if response:
+                        client.send(pickle.dumps(response))
+        except Exception as e:
+            print(f"Client handler error: {e}")
+        finally:
+            client.close()
+
+    def send_message(self, peer_host, peer_port, message):
+        """Send message to peer"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect((peer_host, peer_port))
+
+            # Use pickle instead of JSON
+            sock.send(pickle.dumps(message))
+
+            response_data = sock.recv(4096)
+            if response_data:
+                return pickle.loads(response_data)
+
+        except Exception as e:
+            print(f"Send error to {peer_host}:{peer_port} - {e}")
+            return None
+        finally:
+            try:
+                sock.close()
+            except:
+                pass
+        return None
+
+    def get_random_peer(self):
+        """Get random peer (not self)"""
+        available = [(h, p) for h, p in self.peers if not (h == self.host and p == self.port)]
+        return random.choice(available) if available else None
+
+    def stop(self):
+        """Stop server"""
+        self.running = False
+        if self.server_socket:
+            try:
+                self.server_socket.close()
+            except:
+                pass
+
+
+class SimpleGossipNode:
+    """Simple gossip learning node"""
+
+    def __init__(self, config):
+        self.config = config
+        self.model = SimpleModel()
+        self.network = SimpleNetwork(config.host, config.port, config.peers)
+        self.network.set_handler(self._handle_message)
+        self.training = False
+        self.round_count = 0
+
+    def _handle_message(self, message):
+        """Handle incoming gossip message"""
+        if message.get('type') == 'gossip_request':
+            # Send our parameters
+            return {
+                'type': 'gossip_response',
+                'parameters': self.model.get_parameters()
+            }
+        return None
+
+    def start(self):
+        """Start the node"""
+        print(f"🚀 Starting node {self.config.host}:{self.config.port}")
 
         # Start network
-        print(f"Starting network on {self.config['host']}:{self.config['port']}...")
-        self.gossip_learner.start_network()
+        self.network.start_server()
 
         # Load data
-        data_file = self.config.get("data_file", "ratings.csv")
-        print(f"Loading training data from {data_file}...")
+        if not self.model.load_data(self.config.data_file):
+            print(f"❌ Failed to load {self.config.data_file}")
+            return False
 
-        if not self.gossip_learner.load_data(data_file):
-            print(f"❌ Failed to load data from {data_file}")
-            print("Make sure the file exists and has the correct format.")
-            sys.exit(1)
+        print(f"✅ Loaded data and trained local model")
+        return True
 
-        print("✅ Data loaded and local model trained!")
-
-        # Start training if configured
-        if self.config.get("auto_start_training", True):
-            self.start_training()
-        else:
-            print("Auto-training disabled. Node is ready for manual commands.")
-            self.keep_running()
-
-    def start_training(self):
-        """Start GOSSIP training"""
-        rounds = self.config.get("gossip_rounds", 30)
-        print(f"\n🔄 Starting GOSSIP training for {rounds} rounds...")
-        print("Connecting to peers and exchanging model parameters...")
-
-        # Set gossip interval if specified
-        if "gossip_interval" in self.config:
-            self.gossip_learner.gossip_interval = self.config["gossip_interval"]
-
-        # Start training
-        if not self.gossip_learner.start_gossip_training(rounds):
-            print("❌ Failed to start GOSSIP training")
+    def run_gossip(self):
+        """Run gossip training"""
+        if not self.model.is_trained:
+            print("❌ Model not trained")
             return
 
-        # Handle Ctrl+C gracefully
-        def signal_handler(sig, frame):
-            print("\n⏹️  Stopping training...")
-            self.gossip_learner.stop_training()
-            self.save_and_test()
-            sys.exit(0)
+        print(f"🔄 Starting gossip for {self.config.gossip_rounds} rounds...")
+        self.training = True
+        self.round_count = 0
 
-        signal.signal(signal.SIGINT, signal_handler)
+        while self.training and self.round_count < self.config.gossip_rounds:
+            peer = self.network.get_random_peer()
+            if not peer:
+                print("⚠️ No peers available")
+                time.sleep(self.config.gossip_interval)
+                continue
 
-        print("Training started! Press Ctrl+C to stop early.")
-        print("=" * 50)
+            print(f"Round {self.round_count + 1}: Contacting {peer[0]}:{peer[1]}")
 
-        # Wait for training to complete
-        try:
-            self.gossip_learner.wait_for_training_completion()
-            print("\n✅ GOSSIP training completed!")
-            self.save_and_test()
+            # Send gossip request
+            message = {'type': 'gossip_request'}
+            response = self.network.send_message(peer[0], peer[1], message)
 
-        except KeyboardInterrupt:
-            print("\n⏹️  Training interrupted by user")
-            self.gossip_learner.stop_training()
-            self.save_and_test()
+            if response and response.get('parameters'):
+                # Update our model
+                if self.model.update_parameters(response['parameters']):
+                    print(f"✅ Updated parameters from {peer[0]}:{peer[1]}")
+                else:
+                    print(f"❌ Failed to update parameters")
+            else:
+                print(f"⚠️ No response from {peer[0]}:{peer[1]}")
 
-    def save_and_test(self):
-        """Save model and run test predictions"""
-        # Save model
-        model_file = self.config.get("model_file", "model.pkl")
-        print(f"\n💾 Saving model to {model_file}...")
+            self.round_count += 1
 
-        if self.gossip_learner.save_model(model_file):
-            print("✅ Model saved successfully!")
-        else:
-            print("❌ Failed to save model")
+            if self.round_count < self.config.gossip_rounds:
+                time.sleep(self.config.gossip_interval)
 
-        # Test predictions if configured
-        if self.config.get("auto_predict_after_training", True):
-            self.test_predictions()
+        self.training = False
+        print(f"🎉 Gossip training completed!")
 
     def test_predictions(self):
-        """Run test predictions"""
-        print("\n🔮 Testing predictions...")
+        """Test some predictions"""
+        print("\n🔮 Testing predictions:")
+        test_cases = [(1, 101), (2, 102), (1, 103)]
 
-        test_user_id = self.config.get("test_user_id", 1)
-        num_recs = self.config.get("num_recommendations", 5)
+        for user_id, song_id in test_cases:
+            pred = self.model.predict(user_id, song_id)
+            print(f"User {user_id}, Song {song_id}: {pred:.2f} ⭐")
 
-        # Get recommendations
-        recommendations = self.gossip_learner.recommend_songs(test_user_id, num_recs)
-
-        if recommendations:
-            print(f"\n🎵 Top {len(recommendations)} recommendations for user {test_user_id}:")
-            print("-" * 40)
-            for i, rec in enumerate(recommendations, 1):
-                print(f"{i}. Song {rec['song_id']:>3}: {rec['predicted_rating']:.2f} ⭐")
-        else:
-            print(f"❌ No recommendations available for user {test_user_id}")
-
-        # Test specific prediction
-        print(f"\n🎯 Testing specific prediction:")
-        rating = self.gossip_learner.predict_rating(test_user_id, 101)
-        if rating is not None:
-            print(f"User {test_user_id} + Song 101 = {rating:.2f} ⭐")
-        else:
-            print("Could not predict rating for user 1, song 101")
-
-    def keep_running(self):
-        """Keep the node running for manual interaction"""
-        try:
-            print("\nNode is running. Press Ctrl+C to stop.")
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\n👋 Shutting down...")
-
-        finally:
-            if self.gossip_learner:
-                self.gossip_learner.stop_network()
+    def stop(self):
+        """Stop the node"""
+        self.training = False
+        self.network.stop()
+        print("👋 Node stopped")
 
 
 def main():
     """Main entry point"""
-    if len(sys.argv) > 1:
-        print("This application uses config.json for all settings.")
-        print("Simply run: python main.py")
-        print("\nTo configure different nodes, edit config.json:")
-        print("- Change 'port' for each node")
-        print("- Update 'peers' list accordingly")
+    print("🎵 Simple Gossip Music Recommendation System")
+    print("=" * 50)
+
+    # Load config
+    config = Config.load()
+    print(f"Node: {config.host}:{config.port}")
+    print(f"Peers: {config.peers}")
+
+    # Create and start node
+    node = SimpleGossipNode(config)
+
+    if not node.start():
         sys.exit(1)
 
-    app = MusicGossipApp()
-    app.run()
+    try:
+        # Run gossip training
+        node.run_gossip()
+
+        # Test predictions
+        node.test_predictions()
+
+        # Keep running
+        print("\nNode running. Press Ctrl+C to stop.")
+        while True:
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("\n⏹️ Stopping...")
+        node.stop()
 
 
 if __name__ == "__main__":

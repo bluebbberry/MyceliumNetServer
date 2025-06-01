@@ -1,16 +1,8 @@
 {
-  "host": "localhost",
-  "port": 8002,
-  "peers": [
-    ["localhost", 8001],
-    ["localhost", 8000]
-  ],
-  "data_file": "ratings.csv",
-  "model_file": "model.pkl",
-  "gossip_rounds": 30,
-  "gossip_interval": 5,
-  "auto_start_training": true,
-  "auto_predict_after_training": true,
-  "test_user_id": 1,
-  "num_recommendations": 5
+    "host": "localhost",
+    "port": 8002,
+    "peers": [["localhost", 8000], ["localhost", 8001]],
+    "data_file": "ratings.csv",
+    "gossip_rounds": 10,
+    "gossip_interval": 2.0
 }
