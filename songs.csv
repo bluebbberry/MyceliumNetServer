@@ -1,0 +1,41 @@
+song_id,genre,song_title,artist,duration_ms,acousticness,danceability,energy,instrumentalness,key,liveness,loudness,mode,speechiness,tempo,time_signature
+101,Pop,Blinding Lights,The Weeknd,200040,0.001,0.514,0.73,0.0,1,0.089,-5.934,1,0.0598,171.005,4
+102,Rock,Bohemian Rhapsody,Queen,355320,0.174,0.054,0.426,0.0,3,0.159,-10.963,1,0.0464,72.038,4
+103,Hip-Hop,God's Plan,Drake,198973,0.232,0.754,0.449,0.0,7,0.109,-9.211,1,0.109,77.169,4
+104,Electronic,One More Time,Daft Punk,320357,0.012,0.609,0.679,0.898,9,0.136,-11.258,1,0.0234,123.078,4
+105,Jazz,Take Five,Dave Brubeck Quartet,324000,0.982,0.297,0.146,0.916,6,0.797,-18.126,1,0.0438,175.076,5
+106,Country,Old Town Road,Lil Nas X,113000,0.0102,0.621,0.74,0.0,2,0.0849,-6.367,0,0.0415,136.0,4
+107,R&B,Lovely,Billie Eilish,200186,0.944,0.512,0.178,0.0,8,0.0927,-15.438,0,0.111,115.477,4
+108,Alternative,Smells Like Teen Spirit,Nirvana,301920,0.00297,0.502,0.912,0.0132,1,0.0927,-4.757,0,0.0559,116.761,4
+109,Reggae,Three Little Birds,Bob Marley,180533,0.477,0.584,0.831,0.0,4,0.349,-6.764,1,0.169,76.999,4
+110,Classical,Clair de Lune,Claude Debussy,300000,0.994,0.121,0.0507,0.903,9,0.593,-24.905,1,0.0362,46.35,3
+111,Pop,Shape of You,Ed Sheeran,233713,0.581,0.825,0.652,0.0,1,0.093,-3.183,0,0.0802,95.977,4
+112,Rock,Stairway to Heaven,Led Zeppelin,482830,0.371,0.374,0.456,0.0,2,0.158,-11.929,0,0.0424,82.009,4
+113,Hip-Hop,HUMBLE.,Kendrick Lamar,177000,0.0421,0.904,0.611,0.0,1,0.0832,-6.842,0,0.0940,150.02,4
+114,Electronic,Strobe,Deadmau5,645373,0.0152,0.636,0.781,0.916,2,0.0520,-9.213,1,0.0289,128.0,4
+115,Folk,The Sound of Silence,Simon & Garfunkel,200000,0.963,0.395,0.332,0.0,6,0.132,-12.432,0,0.0456,90.023,4
+116,Funk,Uptown Funk,Mark Ronson ft. Bruno Mars,270000,0.182,0.896,0.84,0.0,7,0.164,-4.632,0,0.0321,115.0,4
+117,Blues,The Thrill Is Gone,B.B. King,308867,0.451,0.329,0.507,0.0,7,0.967,-10.301,0,0.0516,98.002,4
+118,Indie,Mr. Brightside,The Killers,222000,0.0218,0.379,0.89,0.0,1,0.0963,-4.328,1,0.0319,148.46,4
+119,Metal,Master of Puppets,Metallica,515733,0.0124,0.329,0.945,0.0,4,0.0851,-3.925,0,0.0473,212.606,4
+120,Latin,Despacito,Luis Fonsi ft. Daddy Yankee,228827,0.229,0.694,0.815,0.0,2,0.0924,-4.328,1,0.120,178.0,4
+121,Pop,bad guy,Billie Eilish,194088,0.359,0.704,0.434,0.0,7,0.101,-11.789,0,0.378,135.12,4
+122,Rock,Sweet Child O' Mine,Guns N' Roses,356000,0.0151,0.562,0.935,0.0,2,0.123,-4.068,1,0.0516,125.07,4
+123,Hip-Hop,Sicko Mode,Travis Scott,312820,0.0341,0.834,0.73,0.0,8,0.143,-3.714,1,0.222,155.008,4
+124,Electronic,Levels,Avicii,201560,0.00569,0.734,0.709,0.000489,8,0.137,-5.226,0,0.0363,126.024,4
+125,Country,Friends in Low Places,Garth Brooks,258667,0.674,0.606,0.606,0.0,4,0.0966,-6.395,1,0.0289,138.0,4
+126,R&B,Crazy in Love,Beyoncé,236267,0.0335,0.688,0.897,0.0,4,0.17,-4.188,0,0.0508,99.009,4
+127,Alternative,Creep,Radiohead,238227,0.558,0.428,0.304,0.0,7,0.0985,-9.54,1,0.0314,92.5,4
+128,Reggae,No Woman No Cry,Bob Marley,427200,0.726,0.434,0.348,0.0,0,0.892,-11.544,1,0.0985,60.0,4
+129,Classical,Symphony No. 9,Ludwig van Beethoven,900000,0.991,0.178,0.296,0.936,2,0.117,-21.845,1,0.0398,120.0,4
+130,Pop,Watermelon Sugar,Harry Styles,174000,0.122,0.548,0.816,0.0,7,0.281,-4.209,1,0.0465,95.39,4
+131,Rock,Hotel California,Eagles,391394,0.0861,0.425,0.692,0.0161,2,0.357,-9.74,0,0.0424,74.983,4
+132,Hip-Hop,Lose Yourself,Eminem,326000,0.0951,0.704,0.86,0.0,4,0.112,-5.564,0,0.217,86.0,4
+133,Electronic,Sandstorm,Darude,238000,0.00155,0.681,0.989,0.891,7,0.242,-4.432,0,0.0219,136.0,4
+134,Folk,Blowin' in the Wind,Bob Dylan,168000,0.964,0.384,0.219,0.0,7,0.106,-14.641,1,0.0456,90.0,3
+135,Funk,Super Freak,Rick James,203000,0.0456,0.857,0.742,0.0,8,0.378,-6.234,0,0.0821,100.0,4
+136,Blues,Cross Road Blues,Robert Johnson,178000,0.963,0.298,0.234,0.0,4,0.963,-18.456,0,0.0612,120.0,4
+137,Indie,Somebody That I Used to Know,Gotye,244000,0.0824,0.442,0.445,0.0,1,0.0966,-7.301,0,0.0366,129.87,4
+138,Metal,Enter Sandman,Metallica,331773,0.000551,0.513,0.82,0.000234,4,0.133,-4.36,0,0.0482,123.1,4
+139,Latin,La Vida Es Un Carnaval,Celia Cruz,278000,0.145,0.789,0.873,0.0,5,0.431,-5.123,1,0.0987,98.0,4
+140,Pop,Can't Stop the Feeling!,Justin Timberlake,236000,0.0751,0.904,0.902,0.0,0,0.137,-4.969,1,0.169,113.018,4
