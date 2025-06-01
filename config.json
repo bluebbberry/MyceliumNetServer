@@ -1,7 +1,7 @@
 {
     "host": "localhost",
-    "port": 8002,
-    "peers": [["localhost", 8000], ["localhost", 8001]],
+    "port": 8001,
+    "peers": [["localhost", 8000], ["localhost", 8002]],
     "data_file": "ratings.csv",
     "gossip_rounds": 10,
     "gossip_interval": 2.0

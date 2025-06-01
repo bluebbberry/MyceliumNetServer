@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Simplified Gossip Learning for Music Recommendations
-No complex JSON serialization - just basic Python types
+Synchronized Gossip Learning for Music Recommendations
+Waits for all peers to be ready before starting training
 """
 
 import json
@@ -24,6 +24,8 @@ class Config:
     data_file: str = "ratings.csv"
     gossip_rounds: int = 10
     gossip_interval: float = 2.0
+    peer_check_interval: float = 1.0
+    max_wait_time: float = 60.0
 
     @classmethod
     def load(cls, filename="config.json"):
@@ -36,7 +38,9 @@ class Config:
                 peers=[tuple(p) for p in data.get("peers", [])],
                 data_file=data.get("data_file", "ratings.csv"),
                 gossip_rounds=data.get("gossip_rounds", 10),
-                gossip_interval=data.get("gossip_interval", 2.0)
+                gossip_interval=data.get("gossip_interval", 2.0),
+                peer_check_interval=data.get("peer_check_interval", 1.0),
+                max_wait_time=data.get("max_wait_time", 60.0)
             )
         except Exception as e:
             print(f"Error loading config: {e}")
@@ -239,6 +243,12 @@ class SimpleNetwork:
                 pass
         return None
 
+    def check_peer_availability(self, peer_host, peer_port):
+        """Check if a peer is available and ready"""
+        message = {'type': 'ping'}
+        response = self.send_message(peer_host, peer_port, message)
+        return response is not None and response.get('type') == 'pong'
+
     def get_random_peer(self):
         """Get random peer (not self)"""
         available = [(h, p) for h, p in self.peers if not (h == self.host and p == self.port)]
@@ -255,7 +265,7 @@ class SimpleNetwork:
 
 
 class SimpleGossipNode:
-    """Simple gossip learning node"""
+    """Simple gossip learning node with peer synchronization"""
 
     def __init__(self, config):
         self.config = config
@@ -264,16 +274,65 @@ class SimpleGossipNode:
         self.network.set_handler(self._handle_message)
         self.training = False
         self.round_count = 0
+        self.ready_for_training = False
 
     def _handle_message(self, message):
         """Handle incoming gossip message"""
-        if message.get('type') == 'gossip_request':
+        msg_type = message.get('type')
+
+        if msg_type == 'ping':
+            # Respond to ping if we're ready for training
+            if self.ready_for_training:
+                return {'type': 'pong', 'ready': True}
+            else:
+                return {'type': 'pong', 'ready': False}
+
+        elif msg_type == 'gossip_request':
             # Send our parameters
             return {
                 'type': 'gossip_response',
                 'parameters': self.model.get_parameters()
             }
         return None
+
+    def wait_for_peers(self):
+        """Wait until all peers are available and ready for training"""
+        print("⏳ Waiting for all peers to be ready for training...")
+
+        # Get list of peers (excluding self)
+        peer_list = [(h, p) for h, p in self.config.peers if not (h == self.config.host and p == self.config.port)]
+
+        if not peer_list:
+            print("⚠️ No peers configured, starting training immediately")
+            return True
+
+        start_time = time.time()
+
+        while time.time() - start_time < self.config.max_wait_time:
+            ready_peers = []
+            unavailable_peers = []
+
+            for peer_host, peer_port in peer_list:
+                if self.network.check_peer_availability(peer_host, peer_port):
+                    # Check if peer is ready for training
+                    message = {'type': 'ping'}
+                    response = self.network.send_message(peer_host, peer_port, message)
+                    if response and response.get('ready', False):
+                        ready_peers.append(f"{peer_host}:{peer_port}")
+                    else:
+                        unavailable_peers.append(f"{peer_host}:{peer_port} (not ready)")
+                else:
+                    unavailable_peers.append(f"{peer_host}:{peer_port} (offline)")
+
+            if len(ready_peers) == len(peer_list):
+                print(f"✅ All {len(peer_list)} peers are ready!")
+                return True
+
+            print(f"⏳ {len(ready_peers)}/{len(peer_list)} peers ready. Waiting for: {', '.join(unavailable_peers)}")
+            time.sleep(self.config.peer_check_interval)
+
+        print(f"⚠️ Timeout after {self.config.max_wait_time}s. Starting with available peers.")
+        return False
 
     def start(self):
         """Start the node"""
@@ -288,15 +347,23 @@ class SimpleGossipNode:
             return False
 
         print(f"✅ Loaded data and trained local model")
+
+        # Mark as ready for training
+        self.ready_for_training = True
+        print(f"🔵 Node is ready for training")
+
         return True
 
     def run_gossip(self):
-        """Run gossip training"""
+        """Run gossip training after waiting for peers"""
         if not self.model.is_trained:
             print("❌ Model not trained")
             return
 
-        print(f"🔄 Starting gossip for {self.config.gossip_rounds} rounds...")
+        # Wait for peers to be ready
+        self.wait_for_peers()
+
+        print(f"🔄 Starting synchronized gossip for {self.config.gossip_rounds} rounds...")
         self.training = True
         self.round_count = 0
 
@@ -348,13 +415,14 @@ class SimpleGossipNode:
 
 def main():
     """Main entry point"""
-    print("🎵 Simple Gossip Music Recommendation System")
-    print("=" * 50)
+    print("🎵 Synchronized Gossip Music Recommendation System")
+    print("=" * 55)
 
     # Load config
     config = Config.load()
     print(f"Node: {config.host}:{config.port}")
     print(f"Peers: {config.peers}")
+    print(f"Max wait time: {config.max_wait_time}s")
 
     # Create and start node
     node = SimpleGossipNode(config)
@@ -363,7 +431,7 @@ def main():
         sys.exit(1)
 
     try:
-        # Run gossip training
+        # Run gossip training (will wait for peers first)
         node.run_gossip()
 
         # Test predictions
