@@ -1,6 +1,6 @@
 {
   "host": "localhost",
-  "port": 8002,
+  "port": 8001,
   "peers": [
     ["localhost", 8000],
     ["localhost", 8001],

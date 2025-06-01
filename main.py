@@ -601,27 +601,77 @@ class EnhancedGossipNode:
         print(f"🎉 Enhanced gossip training completed!")
 
     def test_predictions(self):
-        """Test predictions with detailed output"""
-        print("\n🔮 Testing enhanced predictions:")
-        test_cases = [(1, 101), (2, 102), (1, 103), (3, 104), (1, 105)]
+        """Test predictions with detailed output for new songs (no existing ratings)"""
+        print("\n🔮 Testing enhanced predictions for NEW songs:")
 
-        for user_id, song_id in test_cases:
-            pred = self.model.predict(user_id, song_id)
-            song_info = self.model.get_song_info(song_id)
-            print(f"User {user_id} → {song_info}: {pred:.2f} ⭐")
+        # Get all available users and songs
+        all_users = list(self.model.user_ratings.keys())
+        all_songs = list(self.model.song_attributes.keys())
 
-            # Show user preferences if available
-            if user_id in self.model.user_preferences:
-                prefs = self.model.user_preferences[user_id]
-                print(f"  User {user_id} preferences: Energy={prefs.get('energy', 0):.2f}, "
-                      f"Danceability={prefs.get('danceability', 0):.2f}, "
-                      f"Genre={prefs.get('genre', 'Unknown')}")
+        if not all_users or not all_songs:
+            print("❌ No users or songs available for testing")
+            return
 
-    def stop(self):
-        """Stop the node"""
-        self.training = False
-        self.network.stop()
-        print("👋 Enhanced node stopped")
+        # Select a few users to test
+        test_users = all_users[:3] if len(all_users) >= 3 else all_users
+        predictions_made = 0
+        target_predictions = 5
+
+        print(f"Testing for users: {test_users}")
+        print("-" * 60)
+
+        for user_id in test_users:
+            if predictions_made >= target_predictions:
+                break
+
+            # Get songs this user has NOT rated
+            user_rated_songs = set(self.model.user_ratings.get(user_id, {}).keys())
+            unrated_songs = [song_id for song_id in all_songs if song_id not in user_rated_songs]
+
+            if not unrated_songs:
+                print(f"⚠️ User {user_id} has rated all available songs")
+                continue
+
+            # Test a few random unrated songs for this user
+            test_songs = random.sample(unrated_songs, min(3, len(unrated_songs)))
+
+            for song_id in test_songs:
+                if predictions_made >= target_predictions:
+                    break
+
+                pred = self.model.predict(user_id, song_id)
+                song_info = self.model.get_song_info(song_id)
+
+                # Get content similarity score for context
+                content_sim = self.model._content_similarity(user_id, song_id)
+
+                print(f"👤 User {user_id} → 🎵 {song_info}")
+                print(f"   Predicted Rating: {pred:.2f} ⭐ (Content Similarity: {content_sim:.2f})")
+
+                # Show user preferences if available
+                if user_id in self.model.user_preferences:
+                    prefs = self.model.user_preferences[user_id]
+                    print(f"   User preferences: Energy={prefs.get('energy', 0):.2f}, "
+                          f"Danceability={prefs.get('danceability', 0):.2f}, "
+                          f"Genre={prefs.get('genre', 'Unknown')}")
+
+                # Show song attributes for comparison
+                if song_id in self.model.song_attributes:
+                    attrs = self.model.song_attributes[song_id]
+                    energy_norm = attrs.get('energy_normalized', attrs.get('energy', 0))
+                    dance_norm = attrs.get('danceability_normalized', attrs.get('danceability', 0))
+                    print(f"   Song attributes: Energy={energy_norm:.2f}, "
+                          f"Danceability={dance_norm:.2f}, "
+                          f"Genre={attrs.get('genre', 'Unknown')}")
+
+                print("-" * 60)
+                predictions_made += 1
+
+        if predictions_made == 0:
+            print("⚠️ No new songs found to test - all users have rated all available songs")
+            print("💡 This suggests the recommendation system is working with limited data")
+        else:
+            print(f"✅ Generated {predictions_made} predictions for new song recommendations")
 
 
 def main():
