@@ -10,7 +10,7 @@ A decentralized federated learning system inspired by P2P file sharing networks 
 - **Automatic Peer Discovery**: Nodes automatically discover and connect to other peers
 - **Gradient Aggregation**: Averaging of model updates across the network
 - 
-![ChatGPT Image May 31, 2025, 08_41_03 AM](docs/ChatGPT Image Jun 6, 2025, 08_34_40 PM.png)
+![ChatGPT Image May 31, 2025, 08_41_03 AM](docs/image.png)
 
 ## How to Use:
 
