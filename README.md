@@ -1,6 +1,6 @@
 # OpenFL
 
-A decentralized federated learning system inspired by P2P file sharing networks like Napster.
+A decentralized federated learning system inspired by P2P file sharing networks like Napster and collaborative computing apps like SETI@home.
 This app enables distributed machine learning across multiple nodes without requiring a central server, while optimizing bandwidth usage through gradient compression techniques.
 Users can train a model for a given machine learning problem with their local data and receive gradient updates from other users of the app to improve their own model.
 
