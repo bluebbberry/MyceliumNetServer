@@ -125,25 +125,42 @@ class P2PNetwork:
 
     async def start_server(self):
         """Start the P2P server"""
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((self.host, self.port))
-        self.server_socket.listen(5)
-        self.running = True
+        try:
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.server_socket.bind((self.host, self.port))
+            self.server_socket.listen(5)
+            self.server_socket.setblocking(False)  # Make non-blocking
+            self.running = True
 
-        logger.info(f"P2P server started on {self.host}:{self.port} (ID: {self.peer_id})")
+            logger.info(f"P2P server started on {self.host}:{self.port} (ID: {self.peer_id})")
 
-        while self.running:
-            try:
-                client_socket, addr = self.server_socket.accept()
-                threading.Thread(target=self._handle_client, args=(client_socket,)).start()
-            except Exception as e:
-                if self.running:
-                    logger.error(f"Server error: {e}")
+            while self.running:
+                try:
+                    # Use asyncio to handle non-blocking socket
+                    await asyncio.sleep(0.1)  # Small delay to prevent busy waiting
+
+                    try:
+                        client_socket, addr = self.server_socket.accept()
+                        client_socket.setblocking(False)
+                        threading.Thread(target=self._handle_client, args=(client_socket,)).start()
+                    except socket.error:
+                        # No connection available, continue
+                        continue
+
+                except Exception as e:
+                    if self.running:
+                        logger.error(f"Server error: {e}")
+                        break
+        except Exception as e:
+            logger.error(f"Failed to start server: {e}")
+            raise
 
     def _handle_client(self, client_socket):
         """Handle incoming client connections"""
         try:
+            client_socket.setblocking(True)  # Make blocking for data transfer
+
             # Receive message length
             length_data = client_socket.recv(4)
             if not length_data:
@@ -166,7 +183,10 @@ class P2PNetwork:
         except Exception as e:
             logger.error(f"Error handling client: {e}")
         finally:
-            client_socket.close()
+            try:
+                client_socket.close()
+            except:
+                pass
 
     def _process_message(self, message: Dict):
         """Process received messages"""
@@ -490,15 +510,29 @@ async def run_demo():
     test_dataset = TensorDataset(torch.FloatTensor(X_test), torch.LongTensor(y_test))
     test_loader = DataLoader(test_dataset, batch_size=32)
 
+    node1 = None
+    node2 = None
+
     try:
         # Create nodes
-        node1, task1 = await create_test_node(8001, (X1, y1))
-        await asyncio.sleep(1)  # Let first node start
+        print("Creating Node 1...")
+        node1 = FederatedLearningNode(port=8001)
+        node1.set_training_data(X1, y1)
 
-        node2, task2 = await create_test_node(8002, (X2, y2))
-        await asyncio.sleep(1)  # Let second node start
+        print("Creating Node 2...")
+        node2 = FederatedLearningNode(port=8002)
+        node2.set_training_data(X2, y2)
+
+        # Start servers in the background
+        print("Starting servers...")
+        task1 = asyncio.create_task(node1.network.start_server())
+        await asyncio.sleep(0.5)  # Give first server time to start
+
+        task2 = asyncio.create_task(node2.network.start_server())
+        await asyncio.sleep(1)  # Give second server time to start
 
         # Connect nodes
+        print("Connecting nodes...")
         await node2.discover_peers([('localhost', 8001)])
         await asyncio.sleep(2)
 
@@ -526,10 +560,24 @@ async def run_demo():
 
     except Exception as e:
         print(f"Demo error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         # Cleanup
-        node1.stop()
-        node2.stop()
+        print("Cleaning up...")
+        if node1:
+            node1.stop()
+        if node2:
+            node2.stop()
+
+        # Cancel background tasks
+        for task in [task1, task2]:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
 
 if __name__ == "__main__":
