@@ -1,707 +1,537 @@
-#!/usr/bin/env python3
-"""
-Enhanced Synchronized Gossip Learning for Music Recommendations
-Now includes song attributes and content-based filtering
-"""
-
+import asyncio
 import json
-import sys
+import pickle
+import hashlib
 import time
+import random
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from typing import Dict, List, Optional, Tuple
 import threading
 import socket
-import random
-import pickle
-import pandas as pd
-import numpy as np
-from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional
+import struct
+from dataclasses import dataclass, asdict
+from collections import defaultdict
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
-class Config:
-    """Simple configuration class"""
-    host: str = "localhost"
-    port: int = 8000
-    peers: List[Tuple[str, int]] = None
-    ratings_file: str = "ratings.csv"
-    songs_file: str = "songs.csv"
-    gossip_rounds: int = 10
-    gossip_interval: float = 2.0
-    peer_check_interval: float = 1.0
-    max_wait_time: float = 60.0
-
-    @classmethod
-    def load(cls, filename="config.json"):
-        try:
-            with open(filename, 'r') as f:
-                data = json.load(f)
-            return cls(
-                host=data.get("host", "localhost"),
-                port=data.get("port", 8000),
-                peers=[tuple(p) for p in data.get("peers", [])],
-                ratings_file=data.get("ratings_file", "ratings.csv"),
-                songs_file=data.get("songs_file", "songs.csv"),
-                gossip_rounds=data.get("gossip_rounds", 10),
-                gossip_interval=data.get("gossip_interval", 2.0),
-                peer_check_interval=data.get("peer_check_interval", 1.0),
-                max_wait_time=data.get("max_wait_time", 60.0)
-            )
-        except Exception as e:
-            print(f"Error loading config: {e}")
-            return cls()
+class PeerInfo:
+    """Information about a peer in the network"""
+    peer_id: str
+    host: str
+    port: int
+    last_seen: float
+    model_hash: str = ""
 
 
-class EnhancedMusicModel:
-    """Enhanced music recommendation model using collaborative + content-based filtering"""
-
-    def __init__(self):
-        # User-based data
-        self.user_ratings = {}  # user_id -> {song_id: rating}
-        self.user_averages = {}
-        self.user_preferences = {}  # user_id -> preference vector based on song attributes
-
-        # Song-based data
-        self.song_attributes = {}  # song_id -> attribute vector
-        self.song_averages = {}
-
-        # Model parameters
-        self.global_average = 0.0
-        self.attribute_weights = {}  # learned weights for different attributes
-        self.is_trained = False
-
-        # Attribute names for normalization
-        self.audio_features = ['acousticness', 'danceability', 'energy', 'instrumentalness',
-                               'liveness', 'loudness', 'speechiness', 'tempo']
-        self.categorical_features = ['genre', 'key', 'mode', 'time_signature']
-
-    def load_data(self, ratings_file, songs_file):
-        """Load ratings and song attributes data"""
-        try:
-            # Load ratings
-            ratings_df = pd.read_csv(ratings_file)
-            for _, row in ratings_df.iterrows():
-                user_id = int(row['user_id'])
-                song_id = int(row['song_id'])
-                rating = float(row['rating'])
-
-                if user_id not in self.user_ratings:
-                    self.user_ratings[user_id] = {}
-                self.user_ratings[user_id][song_id] = rating
-
-            # Load song attributes
-            songs_df = pd.read_csv(songs_file)
-            for _, row in songs_df.iterrows():
-                song_id = int(row['song_id'])
-
-                # Create attribute vector
-                attributes = {}
-                for feature in self.audio_features:
-                    attributes[feature] = float(row[feature])
-
-                # Handle categorical features
-                attributes['genre'] = str(row['genre'])
-                attributes['key'] = int(row['key'])
-                attributes['mode'] = int(row['mode'])
-                attributes['time_signature'] = int(row['time_signature'])
-                attributes['duration_ms'] = int(row['duration_ms'])
-
-                # Store metadata
-                attributes['song_title'] = str(row['song_title'])
-                attributes['artist'] = str(row['artist'])
-
-                self.song_attributes[song_id] = attributes
-
-            print(f"Loaded {len(self.user_ratings)} users and {len(self.song_attributes)} songs")
-            self.train()
-            return True
-
-        except Exception as e:
-            print(f"Error loading data: {e}")
-            return False
-
-    def _normalize_audio_features(self):
-        """Normalize audio features to 0-1 range"""
-        if not self.song_attributes:
-            return
-
-        # Get all audio feature values
-        feature_values = {feature: [] for feature in self.audio_features}
-        for song_attrs in self.song_attributes.values():
-            for feature in self.audio_features:
-                feature_values[feature].append(song_attrs[feature])
-
-        # Calculate min/max for normalization
-        feature_ranges = {}
-        for feature, values in feature_values.items():
-            feature_ranges[feature] = (min(values), max(values))
-
-        # Normalize features
-        for song_id, attrs in self.song_attributes.items():
-            for feature in self.audio_features:
-                min_val, max_val = feature_ranges[feature]
-                if max_val > min_val:
-                    normalized = (attrs[feature] - min_val) / (max_val - min_val)
-                    self.song_attributes[song_id][feature + '_normalized'] = normalized
-                else:
-                    self.song_attributes[song_id][feature + '_normalized'] = 0.5
-
-    def _compute_user_preferences(self):
-        """Compute user preference vectors based on their rated songs"""
-        self.user_preferences = {}
-
-        for user_id, ratings in self.user_ratings.items():
-            preferences = {}
-
-            # Initialize preference sums
-            for feature in self.audio_features:
-                preferences[feature] = 0.0
-            for feature in self.categorical_features:
-                preferences[feature] = {}
-
-            total_weight = 0.0
-
-            # Weight by rating (higher rated songs contribute more to preferences)
-            for song_id, rating in ratings.items():
-                if song_id in self.song_attributes:
-                    weight = (rating - 1) / 4.0  # Convert 1-5 rating to 0-1 weight
-                    song_attrs = self.song_attributes[song_id]
-
-                    # Audio features
-                    for feature in self.audio_features:
-                        normalized_feature = feature + '_normalized'
-                        if normalized_feature in song_attrs:
-                            preferences[feature] += song_attrs[normalized_feature] * weight
-
-                    # Categorical features
-                    for feature in self.categorical_features:
-                        value = song_attrs[feature]
-                        if value not in preferences[feature]:
-                            preferences[feature][value] = 0.0
-                        preferences[feature][value] += weight
-
-                    total_weight += weight
-
-            # Normalize preferences
-            if total_weight > 0:
-                for feature in self.audio_features:
-                    preferences[feature] /= total_weight
-
-                # For categorical features, convert to most preferred values
-                for feature in self.categorical_features:
-                    if preferences[feature]:
-                        most_preferred = max(preferences[feature].items(), key=lambda x: x[1])
-                        preferences[feature] = most_preferred[0]
-                    else:
-                        preferences[feature] = None
-
-            self.user_preferences[user_id] = preferences
-
-    def train(self):
-        """Train the enhanced model"""
-        if not self.user_ratings or not self.song_attributes:
-            return False
-
-        # Normalize audio features
-        self._normalize_audio_features()
-
-        # Compute basic averages (collaborative filtering part)
-        for user_id, ratings in self.user_ratings.items():
-            self.user_averages[user_id] = sum(ratings.values()) / len(ratings)
-
-        # Compute song averages
-        song_ratings = {}
-        for user_id, ratings in self.user_ratings.items():
-            for song_id, rating in ratings.items():
-                if song_id not in song_ratings:
-                    song_ratings[song_id] = []
-                song_ratings[song_id].append(rating)
-
-        for song_id, ratings in song_ratings.items():
-            self.song_averages[song_id] = sum(ratings) / len(ratings)
-
-        # Global average
-        all_ratings = []
-        for ratings in self.user_ratings.values():
-            all_ratings.extend(ratings.values())
-        self.global_average = sum(all_ratings) / len(all_ratings)
-
-        # Compute user preferences (content-based part)
-        self._compute_user_preferences()
-
-        # Initialize attribute weights
-        for feature in self.audio_features:
-            self.attribute_weights[feature] = 1.0  # Equal weight initially
-        for feature in self.categorical_features:
-            self.attribute_weights[feature] = 1.0
-
-        self.is_trained = True
-        print("✅ Enhanced model training completed")
-        return True
-
-    def _content_similarity(self, user_id, song_id):
-        """Calculate content-based similarity between user preferences and song"""
-        if user_id not in self.user_preferences or song_id not in self.song_attributes:
-            return 0.5  # Neutral similarity
-
-        user_prefs = self.user_preferences[user_id]
-        song_attrs = self.song_attributes[song_id]
-
-        similarity = 0.0
-        total_weight = 0.0
-
-        # Audio feature similarity
-        for feature in self.audio_features:
-            if feature in user_prefs:
-                normalized_feature = feature + '_normalized'
-                if normalized_feature in song_attrs:
-                    # Calculate similarity (1 - absolute difference)
-                    diff = abs(user_prefs[feature] - song_attrs[normalized_feature])
-                    feature_similarity = 1.0 - diff
-                    weight = self.attribute_weights.get(feature, 1.0)
-                    similarity += feature_similarity * weight
-                    total_weight += weight
-
-        # Categorical feature similarity
-        for feature in self.categorical_features:
-            if feature in user_prefs and user_prefs[feature] is not None:
-                weight = self.attribute_weights.get(feature, 1.0)
-                if song_attrs[feature] == user_prefs[feature]:
-                    similarity += 1.0 * weight
-                else:
-                    similarity += 0.0 * weight
-                total_weight += weight
-
-        return similarity / total_weight if total_weight > 0 else 0.5
-
-    def predict(self, user_id, song_id):
-        """Enhanced prediction combining collaborative and content-based filtering"""
-        if not self.is_trained:
-            return None
-
-        # Collaborative filtering component
-        user_avg = self.user_averages.get(user_id, self.global_average)
-        song_avg = self.song_averages.get(song_id, self.global_average)
-        collaborative_pred = (user_avg + song_avg + self.global_average) / 3.0
-
-        # Content-based filtering component
-        content_similarity = self._content_similarity(user_id, song_id)
-        content_pred = self.global_average + (content_similarity - 0.5) * 2.0  # Scale similarity to rating range
-
-        # Combine predictions (weighted average)
-        # Give more weight to collaborative if we have user history, otherwise rely more on content
-        if user_id in self.user_ratings and len(self.user_ratings[user_id]) > 5:
-            # User has enough history, trust collaborative filtering more
-            prediction = 0.7 * collaborative_pred + 0.3 * content_pred
-        else:
-            # New user or limited history, rely more on content-based
-            prediction = 0.3 * collaborative_pred + 0.7 * content_pred
-
-        return max(1.0, min(5.0, prediction))  # Clamp to 1-5 range
-
-    def get_song_info(self, song_id):
-        """Get song information for display"""
-        if song_id in self.song_attributes:
-            attrs = self.song_attributes[song_id]
-            return f"{attrs['song_title']} by {attrs['artist']} ({attrs['genre']})"
-        return f"Song {song_id}"
-
-    def get_parameters(self):
-        """Get model parameters for gossip"""
-        return {
-            'user_averages': dict(self.user_averages),
-            'song_averages': dict(self.song_averages),
-            'global_average': float(self.global_average),
-            'user_preferences': dict(self.user_preferences),
-            'attribute_weights': dict(self.attribute_weights)
-        }
-
-    def update_parameters(self, other_params):
-        """Average our parameters with another node's parameters"""
-        if not other_params:
-            return False
-
-        try:
-            # Average user averages
-            for user_id, avg in other_params.get('user_averages', {}).items():
-                user_id = int(user_id)
-                if user_id in self.user_averages:
-                    self.user_averages[user_id] = (self.user_averages[user_id] + avg) / 2.0
-                else:
-                    self.user_averages[user_id] = avg
-
-            # Average song averages
-            for song_id, avg in other_params.get('song_averages', {}).items():
-                song_id = int(song_id)
-                if song_id in self.song_averages:
-                    self.song_averages[song_id] = (self.song_averages[song_id] + avg) / 2.0
-                else:
-                    self.song_averages[song_id] = avg
-
-            # Average global average
-            other_global = other_params.get('global_average', self.global_average)
-            self.global_average = (self.global_average + other_global) / 2.0
-
-            # Update user preferences (simple averaging for now)
-            other_prefs = other_params.get('user_preferences', {})
-            for user_id, prefs in other_prefs.items():
-                user_id = int(user_id)
-                if user_id in self.user_preferences:
-                    # Average numerical preferences
-                    for feature in self.audio_features:
-                        if feature in prefs and feature in self.user_preferences[user_id]:
-                            current = self.user_preferences[user_id][feature]
-                            other = prefs[feature]
-                            self.user_preferences[user_id][feature] = (current + other) / 2.0
-                else:
-                    self.user_preferences[user_id] = prefs
-
-            # Average attribute weights
-            other_weights = other_params.get('attribute_weights', {})
-            for feature, weight in other_weights.items():
-                if feature in self.attribute_weights:
-                    self.attribute_weights[feature] = (self.attribute_weights[feature] + weight) / 2.0
-                else:
-                    self.attribute_weights[feature] = weight
-
-            return True
-        except Exception as e:
-            print(f"Error updating parameters: {e}")
-            return False
+@dataclass
+class ModelUpdate:
+    """Represents a model update (gradients) to be shared"""
+    sender_id: str
+    gradients: Dict[str, np.ndarray]
+    timestamp: float
+    compression_ratio: float = 1.0
+    round_number: int = 0
 
 
-class SimpleNetwork:
-    """Simple TCP networking without complex serialization"""
+class SimpleModel(nn.Module):
+    """Simple neural network for demonstration"""
 
-    def __init__(self, host, port, peers):
+    def __init__(self, input_size: int = 784, hidden_size: int = 128, num_classes: int = 10):
+        super(SimpleModel, self).__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(hidden_size, num_classes)
+
+    def forward(self, x):
+        x = x.view(x.size(0), -1)  # Flatten
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return x
+
+
+class GradientCompressor:
+    """Handles gradient compression to reduce bandwidth"""
+
+    @staticmethod
+    def top_k_compression(gradients: Dict[str, torch.Tensor], k_ratio: float = 0.1) -> Tuple[
+        Dict[str, np.ndarray], float]:
+        """Compress gradients by keeping only top-k values"""
+        compressed = {}
+        total_params = 0
+        kept_params = 0
+
+        for name, grad in gradients.items():
+            if grad is None:
+                continue
+
+            grad_flat = grad.flatten()
+            total_params += len(grad_flat)
+
+            # Keep top k% of gradients by magnitude
+            k = max(1, int(len(grad_flat) * k_ratio))
+            _, indices = torch.topk(torch.abs(grad_flat), k)
+
+            # Create sparse representation
+            sparse_grad = torch.zeros_like(grad_flat)
+            sparse_grad[indices] = grad_flat[indices]
+
+            compressed[name] = {
+                'values': sparse_grad.numpy(),
+                'shape': grad.shape
+            }
+            kept_params += k
+
+        compression_ratio = kept_params / total_params if total_params > 0 else 1.0
+        return compressed, compression_ratio
+
+    @staticmethod
+    def decompress_gradients(compressed: Dict[str, np.ndarray]) -> Dict[str, torch.Tensor]:
+        """Decompress gradients back to torch tensors"""
+        decompressed = {}
+        for name, data in compressed.items():
+            if isinstance(data, dict) and 'values' in data:
+                values = torch.from_numpy(data['values']).float()
+                decompressed[name] = values.reshape(data['shape'])
+            else:
+                decompressed[name] = torch.from_numpy(data).float()
+        return decompressed
+
+
+class P2PNetwork:
+    """Handles P2P networking for the federated learning system"""
+
+    def __init__(self, host: str = 'localhost', port: int = 8000):
         self.host = host
         self.port = port
-        self.peers = peers
-        self.running = False
+        self.peer_id = self._generate_peer_id()
+        self.peers: Dict[str, PeerInfo] = {}
         self.server_socket = None
-        self.message_handler = None
+        self.running = False
+        self.message_handlers = {}
 
-    def set_handler(self, handler):
-        self.message_handler = handler
+    def _generate_peer_id(self) -> str:
+        """Generate unique peer ID"""
+        return hashlib.sha256(f"{self.host}:{self.port}:{time.time()}".encode()).hexdigest()[:16]
 
-    def start_server(self):
-        """Start server in background thread"""
+    async def start_server(self):
+        """Start the P2P server"""
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind((self.host, self.port))
+        self.server_socket.listen(5)
+        self.running = True
 
-        def server_loop():
+        logger.info(f"P2P server started on {self.host}:{self.port} (ID: {self.peer_id})")
+
+        while self.running:
             try:
-                self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                self.server_socket.bind((self.host, self.port))
-                self.server_socket.listen(5)
-                self.running = True
-                print(f"Server listening on {self.host}:{self.port}")
-
-                while self.running:
-                    try:
-                        client, addr = self.server_socket.accept()
-                        threading.Thread(target=self._handle_client, args=(client, addr), daemon=True).start()
-                    except:
-                        if self.running:
-                            print("Server accept error")
-                        break
+                client_socket, addr = self.server_socket.accept()
+                threading.Thread(target=self._handle_client, args=(client_socket,)).start()
             except Exception as e:
-                print(f"Server error: {e}")
+                if self.running:
+                    logger.error(f"Server error: {e}")
 
-        threading.Thread(target=server_loop, daemon=True).start()
-        time.sleep(0.5)  # Give server time to start
-
-    def _handle_client(self, client, addr):
-        """Handle incoming connection"""
+    def _handle_client(self, client_socket):
+        """Handle incoming client connections"""
         try:
-            data = client.recv(8192)  # Increased buffer size for larger parameters
-            if data:
-                message = pickle.loads(data)
-                if self.message_handler:
-                    response = self.message_handler(message)
-                    if response:
-                        client.send(pickle.dumps(response))
-        except Exception as e:
-            print(f"Client handler error: {e}")
-        finally:
-            client.close()
+            # Receive message length
+            length_data = client_socket.recv(4)
+            if not length_data:
+                return
 
-    def send_message(self, peer_host, peer_port, message):
-        """Send message to peer"""
+            message_length = struct.unpack('!I', length_data)[0]
+
+            # Receive message
+            message_data = b''
+            while len(message_data) < message_length:
+                chunk = client_socket.recv(min(4096, message_length - len(message_data)))
+                if not chunk:
+                    break
+                message_data += chunk
+
+            if len(message_data) == message_length:
+                message = pickle.loads(message_data)
+                self._process_message(message)
+
+        except Exception as e:
+            logger.error(f"Error handling client: {e}")
+        finally:
+            client_socket.close()
+
+    def _process_message(self, message: Dict):
+        """Process received messages"""
+        msg_type = message.get('type')
+        if msg_type in self.message_handlers:
+            self.message_handlers[msg_type](message)
+
+    def register_handler(self, message_type: str, handler):
+        """Register message handler"""
+        self.message_handlers[message_type] = handler
+
+    async def send_message(self, peer_info: PeerInfo, message: Dict) -> bool:
+        """Send message to a peer"""
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(10)  # Increased timeout for larger data
-            sock.connect((peer_host, peer_port))
+            sock.settimeout(10)  # 10 second timeout
+            sock.connect((peer_info.host, peer_info.port))
 
-            sock.send(pickle.dumps(message))
-            response_data = sock.recv(8192)  # Increased buffer size
-            if response_data:
-                return pickle.loads(response_data)
+            # Serialize message
+            message_data = pickle.dumps(message)
+            message_length = len(message_data)
 
-        except Exception as e:
-            print(f"Send error to {peer_host}:{peer_port} - {e}")
-            return None
-        finally:
-            try:
-                sock.close()
-            except:
-                pass
-        return None
+            # Send length first, then message
+            sock.send(struct.pack('!I', message_length))
+            sock.send(message_data)
 
-    def check_peer_availability(self, peer_host, peer_port):
-        """Check if a peer is available and ready"""
-        message = {'type': 'ping'}
-        response = self.send_message(peer_host, peer_port, message)
-        return response is not None and response.get('type') == 'pong'
-
-    def get_random_peer(self):
-        """Get random peer (not self)"""
-        available = [(h, p) for h, p in self.peers if not (h == self.host and p == self.port)]
-        return random.choice(available) if available else None
-
-    def stop(self):
-        """Stop server"""
-        self.running = False
-        if self.server_socket:
-            try:
-                self.server_socket.close()
-            except:
-                pass
-
-
-class EnhancedGossipNode:
-    """Enhanced gossip learning node with song attributes"""
-
-    def __init__(self, config):
-        self.config = config
-        self.model = EnhancedMusicModel()
-        self.network = SimpleNetwork(config.host, config.port, config.peers)
-        self.network.set_handler(self._handle_message)
-        self.training = False
-        self.round_count = 0
-        self.ready_for_training = False
-
-    def _handle_message(self, message):
-        """Handle incoming gossip message"""
-        msg_type = message.get('type')
-
-        if msg_type == 'ping':
-            if self.ready_for_training:
-                return {'type': 'pong', 'ready': True}
-            else:
-                return {'type': 'pong', 'ready': False}
-
-        elif msg_type == 'gossip_request':
-            return {
-                'type': 'gossip_response',
-                'parameters': self.model.get_parameters()
-            }
-
-        elif msg_type == 'predict_request':
-            user_id = message.get('user_id')
-            song_id = message.get('song_id')
-            if user_id is not None and song_id is not None:
-                prediction = self.model.predict(user_id, song_id)
-                return {
-                    'type': 'predict_response',
-                    'prediction': prediction,
-                    'song_info': self.model.get_song_info(song_id)
-                }
-        return None
-
-    def wait_for_peers(self):
-        """Wait until all peers are available and ready for training"""
-        print("⏳ Waiting for all peers to be ready for training...")
-
-        peer_list = [(h, p) for h, p in self.config.peers if not (h == self.config.host and p == self.config.port)]
-
-        if not peer_list:
-            print("⚠️ No peers configured, starting training immediately")
+            sock.close()
             return True
 
-        start_time = time.time()
-
-        while time.time() - start_time < self.config.max_wait_time:
-            ready_peers = []
-            unavailable_peers = []
-
-            for peer_host, peer_port in peer_list:
-                if self.network.check_peer_availability(peer_host, peer_port):
-                    message = {'type': 'ping'}
-                    response = self.network.send_message(peer_host, peer_port, message)
-                    if response and response.get('ready', False):
-                        ready_peers.append(f"{peer_host}:{peer_port}")
-                    else:
-                        unavailable_peers.append(f"{peer_host}:{peer_port} (not ready)")
-                else:
-                    unavailable_peers.append(f"{peer_host}:{peer_port} (offline)")
-
-            if len(ready_peers) == len(peer_list):
-                print(f"✅ All {len(peer_list)} peers are ready!")
-                return True
-
-            print(f"⏳ {len(ready_peers)}/{len(peer_list)} peers ready. Waiting for: {', '.join(unavailable_peers)}")
-            time.sleep(self.config.peer_check_interval)
-
-        print(f"⚠️ Timeout after {self.config.max_wait_time}s. Starting with available peers.")
-        return False
-
-    def start(self):
-        """Start the node"""
-        print(f"🚀 Starting enhanced node {self.config.host}:{self.config.port}")
-
-        self.network.start_server()
-
-        if not self.model.load_data(self.config.ratings_file, self.config.songs_file):
-            print(f"❌ Failed to load data files")
+        except Exception as e:
+            logger.error(f"Failed to send message to {peer_info.peer_id}: {e}")
             return False
 
-        print(f"✅ Loaded data and trained enhanced model")
-        self.ready_for_training = True
-        print(f"🔵 Node is ready for training")
+    def add_peer(self, host: str, port: int, peer_id: str = None):
+        """Add a peer to the network"""
+        if not peer_id:
+            peer_id = f"{host}:{port}"
 
-        return True
+        peer_info = PeerInfo(
+            peer_id=peer_id,
+            host=host,
+            port=port,
+            last_seen=time.time()
+        )
+        self.peers[peer_id] = peer_info
+        logger.info(f"Added peer: {peer_id}")
 
-    def run_gossip(self):
-        """Run gossip training after waiting for peers"""
-        if not self.model.is_trained:
-            print("❌ Model not trained")
-            return
+    def get_active_peers(self, timeout: float = 300) -> List[PeerInfo]:
+        """Get list of active peers (seen within timeout seconds)"""
+        current_time = time.time()
+        active_peers = []
 
-        self.wait_for_peers()
+        for peer in self.peers.values():
+            if current_time - peer.last_seen < timeout:
+                active_peers.append(peer)
 
-        print(f"🔄 Starting synchronized gossip for {self.config.gossip_rounds} rounds...")
-        self.training = True
-        self.round_count = 0
+        return active_peers
 
-        while self.training and self.round_count < self.config.gossip_rounds:
-            peer = self.network.get_random_peer()
-            if not peer:
-                print("⚠️ No peers available")
-                time.sleep(self.config.gossip_interval)
-                continue
+    def stop(self):
+        """Stop the P2P network"""
+        self.running = False
+        if self.server_socket:
+            self.server_socket.close()
 
-            print(f"Round {self.round_count + 1}: Contacting {peer[0]}:{peer[1]}")
 
-            message = {'type': 'gossip_request'}
-            response = self.network.send_message(peer[0], peer[1], message)
+class FederatedLearningNode:
+    """Main federated learning node that combines P2P networking with ML training"""
 
-            if response and response.get('parameters'):
-                if self.model.update_parameters(response['parameters']):
-                    print(f"✅ Updated enhanced parameters from {peer[0]}:{peer[1]}")
-                else:
-                    print(f"❌ Failed to update parameters")
+    def __init__(self, host: str = 'localhost', port: int = 8000, model_params: Dict = None):
+        self.network = P2PNetwork(host, port)
+        self.model = SimpleModel(**(model_params or {}))
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
+        self.criterion = nn.CrossEntropyLoss()
+        self.compressor = GradientCompressor()
+
+        # Federated learning state
+        self.round_number = 0
+        self.local_updates = []
+        self.aggregated_gradients = {}
+        self.training_data = None
+
+        # Register message handlers
+        self.network.register_handler('model_update', self._handle_model_update)
+        self.network.register_handler('peer_discovery', self._handle_peer_discovery)
+        self.network.register_handler('training_round', self._handle_training_round)
+
+    def set_training_data(self, X: np.ndarray, y: np.ndarray, batch_size: int = 32):
+        """Set training data for the node"""
+        X_tensor = torch.FloatTensor(X)
+        y_tensor = torch.LongTensor(y)
+        dataset = TensorDataset(X_tensor, y_tensor)
+        self.training_data = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        logger.info(f"Training data set: {len(X)} samples")
+
+    def _handle_model_update(self, message: Dict):
+        """Handle incoming model updates from peers"""
+        try:
+            update = ModelUpdate(**message['data'])
+
+            # Decompress gradients
+            gradients = self.compressor.decompress_gradients(update.gradients)
+
+            # Store update for aggregation
+            self.local_updates.append({
+                'sender': update.sender_id,
+                'gradients': gradients,
+                'timestamp': update.timestamp,
+                'round': update.round_number
+            })
+
+            logger.info(f"Received model update from {update.sender_id} "
+                        f"(compression: {update.compression_ratio:.2%})")
+
+        except Exception as e:
+            logger.error(f"Error handling model update: {e}")
+
+    def _handle_peer_discovery(self, message: Dict):
+        """Handle peer discovery messages"""
+        peer_data = message['data']
+        peer_id = peer_data['peer_id']
+
+        if peer_id != self.network.peer_id:
+            self.network.add_peer(
+                host=peer_data['host'],
+                port=peer_data['port'],
+                peer_id=peer_id
+            )
+
+    def _handle_training_round(self, message: Dict):
+        """Handle training round initiation"""
+        round_data = message['data']
+        self.round_number = max(self.round_number, round_data['round_number'])
+        logger.info(f"Starting training round {self.round_number}")
+
+        # Trigger local training
+        asyncio.create_task(self.train_local_model())
+
+    async def start(self):
+        """Start the federated learning node"""
+        await self.network.start_server()
+
+    async def train_local_model(self, epochs: int = 1) -> Dict[str, torch.Tensor]:
+        """Train the local model and return gradients"""
+        if not self.training_data:
+            logger.warning("No training data set")
+            return {}
+
+        self.model.train()
+        initial_params = {name: param.clone() for name, param in self.model.named_parameters()}
+
+        for epoch in range(epochs):
+            for batch_idx, (data, target) in enumerate(self.training_data):
+                self.optimizer.zero_grad()
+                output = self.model(data)
+                loss = self.criterion(output, target)
+                loss.backward()
+                self.optimizer.step()
+
+        # Calculate gradients (difference between final and initial parameters)
+        gradients = {}
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                # Use actual gradients from last batch
+                gradients[name] = param.grad.clone()
             else:
-                print(f"⚠️ No response from {peer[0]}:{peer[1]}")
+                # Calculate parameter difference as proxy for average gradient
+                gradients[name] = param.data - initial_params[name]
 
-            self.round_count += 1
+        logger.info(f"Local training completed for round {self.round_number}")
+        return gradients
 
-            if self.round_count < self.config.gossip_rounds:
-                time.sleep(self.config.gossip_interval)
-
-        self.training = False
-        print(f"🎉 Enhanced gossip training completed!")
-
-    def test_predictions(self):
-        """Test predictions with detailed output for new songs (no existing ratings)"""
-        print("\n🔮 Testing enhanced predictions for NEW songs:")
-
-        # Get all available users and songs
-        all_users = list(self.model.user_ratings.keys())
-        all_songs = list(self.model.song_attributes.keys())
-
-        if not all_users or not all_songs:
-            print("❌ No users or songs available for testing")
+    async def share_model_update(self, gradients: Dict[str, torch.Tensor]):
+        """Share model update with peers"""
+        if not gradients:
             return
 
-        # Select a few users to test
-        test_users = all_users[:3] if len(all_users) >= 3 else all_users
-        predictions_made = 0
-        target_predictions = 5
+        # Compress gradients
+        compressed_gradients, compression_ratio = self.compressor.top_k_compression(gradients)
 
-        print(f"Testing for users: {test_users}")
-        print("-" * 60)
+        # Create update message
+        update = ModelUpdate(
+            sender_id=self.network.peer_id,
+            gradients=compressed_gradients,
+            timestamp=time.time(),
+            compression_ratio=compression_ratio,
+            round_number=self.round_number
+        )
 
-        for user_id in test_users:
-            if predictions_made >= target_predictions:
-                break
+        message = {
+            'type': 'model_update',
+            'data': asdict(update)
+        }
 
-            # Get songs this user has NOT rated
-            user_rated_songs = set(self.model.user_ratings.get(user_id, {}).keys())
-            unrated_songs = [song_id for song_id in all_songs if song_id not in user_rated_songs]
+        # Send to all active peers
+        active_peers = self.network.get_active_peers()
+        success_count = 0
 
-            if not unrated_songs:
-                print(f"⚠️ User {user_id} has rated all available songs")
-                continue
+        for peer in active_peers:
+            if await self.network.send_message(peer, message):
+                success_count += 1
 
-            # Test a few random unrated songs for this user
-            test_songs = random.sample(unrated_songs, min(3, len(unrated_songs)))
+        logger.info(f"Shared update with {success_count}/{len(active_peers)} peers "
+                    f"(compression: {compression_ratio:.2%})")
 
-            for song_id in test_songs:
-                if predictions_made >= target_predictions:
-                    break
+    def aggregate_updates(self):
+        """Aggregate received model updates"""
+        if not self.local_updates:
+            return
 
-                pred = self.model.predict(user_id, song_id)
-                song_info = self.model.get_song_info(song_id)
+        # Simple averaging of gradients
+        aggregated = defaultdict(list)
 
-                # Get content similarity score for context
-                content_sim = self.model._content_similarity(user_id, song_id)
+        for update in self.local_updates:
+            for name, grad in update['gradients'].items():
+                aggregated[name].append(grad)
 
-                print(f"👤 User {user_id} → 🎵 {song_info}")
-                print(f"   Predicted Rating: {pred:.2f} ⭐ (Content Similarity: {content_sim:.2f})")
+        # Average gradients
+        final_gradients = {}
+        for name, grad_list in aggregated.items():
+            if grad_list:
+                stacked = torch.stack(grad_list)
+                final_gradients[name] = torch.mean(stacked, dim=0)
 
-                # Show user preferences if available
-                if user_id in self.model.user_preferences:
-                    prefs = self.model.user_preferences[user_id]
-                    print(f"   User preferences: Energy={prefs.get('energy', 0):.2f}, "
-                          f"Danceability={prefs.get('danceability', 0):.2f}, "
-                          f"Genre={prefs.get('genre', 'Unknown')}")
+        # Apply aggregated gradients
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if name in final_gradients:
+                    param.data -= 0.01 * final_gradients[name]  # Simple gradient descent
 
-                # Show song attributes for comparison
-                if song_id in self.model.song_attributes:
-                    attrs = self.model.song_attributes[song_id]
-                    energy_norm = attrs.get('energy_normalized', attrs.get('energy', 0))
-                    dance_norm = attrs.get('danceability_normalized', attrs.get('danceability', 0))
-                    print(f"   Song attributes: Energy={energy_norm:.2f}, "
-                          f"Danceability={dance_norm:.2f}, "
-                          f"Genre={attrs.get('genre', 'Unknown')}")
+        logger.info(f"Aggregated {len(self.local_updates)} updates")
+        self.local_updates.clear()
 
-                print("-" * 60)
-                predictions_made += 1
+    async def run_federated_round(self):
+        """Run a complete federated learning round"""
+        logger.info(f"Starting federated learning round {self.round_number}")
 
-        if predictions_made == 0:
-            print("⚠️ No new songs found to test - all users have rated all available songs")
-            print("💡 This suggests the recommendation system is working with limited data")
-        else:
-            print(f"✅ Generated {predictions_made} predictions for new song recommendations")
+        # 1. Train local model
+        gradients = await self.train_local_model()
+
+        # 2. Share updates with peers
+        await self.share_model_update(gradients)
+
+        # 3. Wait for peer updates (in practice, you'd want more sophisticated synchronization)
+        await asyncio.sleep(10)
+
+        # 4. Aggregate received updates
+        self.aggregate_updates()
+
+        self.round_number += 1
+        logger.info(f"Completed federated learning round {self.round_number - 1}")
+
+    async def discover_peers(self, bootstrap_peers: List[Tuple[str, int]]):
+        """Discover peers in the network"""
+        discovery_message = {
+            'type': 'peer_discovery',
+            'data': {
+                'peer_id': self.network.peer_id,
+                'host': self.network.host,
+                'port': self.network.port
+            }
+        }
+
+        for host, port in bootstrap_peers:
+            peer_info = PeerInfo(peer_id=f"{host}:{port}", host=host, port=port, last_seen=time.time())
+            await self.network.send_message(peer_info, discovery_message)
+            self.network.add_peer(host, port)
+
+    def get_model_accuracy(self, test_data: DataLoader) -> float:
+        """Evaluate model accuracy on test data"""
+        self.model.eval()
+        correct = 0
+        total = 0
+
+        with torch.no_grad():
+            for data, target in test_data:
+                outputs = self.model(data)
+                _, predicted = torch.max(outputs.data, 1)
+                total += target.size(0)
+                correct += (predicted == target).sum().item()
+
+        return correct / total if total > 0 else 0.0
+
+    def stop(self):
+        """Stop the federated learning node"""
+        self.network.stop()
 
 
-def main():
-    """Main entry point"""
-    print("🎵 Enhanced Synchronized Gossip Music Recommendation System")
-    print("=" * 65)
+# Example usage and testing
+async def create_test_node(port: int, training_data: Tuple[np.ndarray, np.ndarray]):
+    """Create a test node with sample data"""
+    node = FederatedLearningNode(port=port)
 
-    config = Config.load()
-    print(f"Node: {config.host}:{config.port}")
-    print(f"Peers: {config.peers}")
-    print(f"Ratings file: {config.ratings_file}")
-    print(f"Songs file: {config.songs_file}")
+    # Set training data
+    X, y = training_data
+    node.set_training_data(X, y)
 
-    node = EnhancedGossipNode(config)
+    # Start the node in a separate task
+    server_task = asyncio.create_task(node.start())
 
-    if not node.start():
-        sys.exit(1)
+    return node, server_task
+
+
+async def run_demo():
+    """Demonstrate the P2P federated learning system"""
+    print("Starting P2P Federated Learning Demo...")
+
+    # Create synthetic data for demonstration
+    np.random.seed(42)
+
+    # Node 1 data (focused on classes 0-4)
+    X1 = np.random.randn(1000, 784)
+    y1 = np.random.randint(0, 5, 1000)
+
+    # Node 2 data (focused on classes 5-9)
+    X2 = np.random.randn(1000, 784)
+    y2 = np.random.randint(5, 10, 1000)
+
+    # Create test data
+    X_test = np.random.randn(200, 784)
+    y_test = np.random.randint(0, 10, 200)
+    test_dataset = TensorDataset(torch.FloatTensor(X_test), torch.LongTensor(y_test))
+    test_loader = DataLoader(test_dataset, batch_size=32)
 
     try:
-        node.run_gossip()
-        node.test_predictions()
+        # Create nodes
+        node1, task1 = await create_test_node(8001, (X1, y1))
+        await asyncio.sleep(1)  # Let first node start
 
-        print("\nEnhanced node running. Press Ctrl+C to stop.")
-        while True:
-            time.sleep(1)
+        node2, task2 = await create_test_node(8002, (X2, y2))
+        await asyncio.sleep(1)  # Let second node start
 
-    except KeyboardInterrupt:
-        print("\n⏹️ Stopping...")
-        node.stop()
+        # Connect nodes
+        await node2.discover_peers([('localhost', 8001)])
+        await asyncio.sleep(2)
+
+        print(f"Node 1 peers: {len(node1.network.get_active_peers())}")
+        print(f"Node 2 peers: {len(node2.network.get_active_peers())}")
+
+        # Run federated learning rounds
+        for round_num in range(3):
+            print(f"\n--- Round {round_num + 1} ---")
+
+            # Run training rounds concurrently
+            await asyncio.gather(
+                node1.run_federated_round(),
+                node2.run_federated_round()
+            )
+
+            # Evaluate models
+            acc1 = node1.get_model_accuracy(test_loader)
+            acc2 = node2.get_model_accuracy(test_loader)
+
+            print(f"Node 1 accuracy: {acc1:.3f}")
+            print(f"Node 2 accuracy: {acc2:.3f}")
+
+        print("\nDemo completed successfully!")
+
+    except Exception as e:
+        print(f"Demo error: {e}")
+    finally:
+        # Cleanup
+        node1.stop()
+        node2.stop()
 
 
 if __name__ == "__main__":
-    main()
+    # Run the demo
+    asyncio.run(run_demo())
