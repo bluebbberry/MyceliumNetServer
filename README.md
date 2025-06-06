@@ -9,7 +9,7 @@ A decentralized federated learning system inspired by P2P file sharing networks 
 - **Asynchronous Training**: Nodes can train and share updates independently
 - **Automatic Peer Discovery**: Nodes automatically discover and connect to other peers
 - **Gradient Aggregation**: Averaging of model updates across the network
-- 
+
 ![ChatGPT Image May 31, 2025, 08_41_03 AM](docs/image.png)
 
 ## How to Use:
