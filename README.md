@@ -1,65 +1,32 @@
 # OpenFL
 
-P2P + federated machine learning + nodes are able to switch learning groups (similar to p2pfl plus switching of nodes)
+A decentralized federated learning system inspired by P2P file sharing networks like Napster. This implementation enables distributed machine learning across multiple nodes without requiring a central server, while optimizing bandwidth usage through gradient compression techniques.
 
-![ChatGPT Image May 31, 2025, 08_41_03 AM](https://github.com/user-attachments/assets/57aeda8a-d2e9-4d36-a9c1-704a96c06211)
+## 🚀 Features
 
-# GOSSIP Music Recommendation System
+- **Decentralized Architecture**: No central server required - all nodes communicate peer-to-peer
+- **Bandwidth Optimization**: Top-k gradient compression reduces network traffic by up to 90%
+- **Asynchronous Training**: Nodes can train and share updates independently
+- **Automatic Peer Discovery**: Nodes automatically discover and connect to other peers
+- **Gradient Aggregation**: Averaging of model updates across the network
+- 
+![ChatGPT Image May 31, 2025, 08_41_03 AM](docs/ChatGPT Image Jun 6, 2025, 08_34_40 PM.png)
 
-A distributed music recommendation system using GOSSIP protocol for federated learning.
+## How to Use:
 
-## Setup
+1**Create a virtual environment** (recommended):
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
 
-### 1. Install Dependencies
+2**Install dependencies**:
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Files Needed
-- `ratings.csv` - Your music rating data
-- `songs.csv` - Your songs data
-- `config.json` - Node configuration
-- All Python files in the same directory
+3.**Run the demo**:
 
-## Quick Start
-
-### Single Node Test
-```bash
+```
 python main.py
 ```
-That's it! The program will:
-1. Load config.json
-2. Load ratings.csv
-3. Load songs.csv  
-4. Train locally
-5. Start GOSSIP training
-6. Save the model
-7. Show recommendations
-
-### Multi-Node Test (3 Terminals)
-
-**Step 1**: Copy the config files
-```bash
-cp config1.json config.json  # Terminal 1
-cp config2.json config.json  # Terminal 2  
-cp config3.json config.json  # Terminal 3
-```
-
-**Step 2**: Start all nodes simultaneously
-```bash
-# Terminal 1
-python main.py
-
-# Terminal 2 (different directory or copy config2.json to config.json)
-python main.py
-
-# Terminal 3 (different directory or copy config3.json to config.json)  
-python main.py
-```
-
-**That's it!** Each node will automatically:
-- Start on its configured port
-- Load the same rating data
-- Begin GOSSIP training with other nodes
-- Exchange model parameters
-- Show final recommendations
