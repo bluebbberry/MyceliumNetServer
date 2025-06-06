@@ -14,18 +14,18 @@ A decentralized federated learning system inspired by P2P file sharing networks 
 
 ## How to Use:
 
-1**Create a virtual environment** (recommended):
+### 1. Create a virtual environment (recommended):
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-2**Install dependencies**:
+### 2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3.**Run the demo**:
+### 3. Run the demo:
 
 ```
 python main.py
