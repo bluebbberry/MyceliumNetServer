@@ -1,585 +1,604 @@
-import asyncio
+# Mycelium Net MVP - A Meta-Federated Learning Network
+# Complete implementation with Flower AI integration
+
+# ===========================================
+# 1. GLOBAL LOOKUP TABLE SERVER (registry.py)
+# ===========================================
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import Dict, List, Optional
+import sqlite3
 import json
-import pickle
-import hashlib
 import time
+from datetime import datetime
+import uuid
+
+app = FastAPI(title="Mycelium Net Registry", version="1.0.0")
+
+
+# Database setup
+def init_db():
+    conn = sqlite3.connect('mycelium_registry.db')
+    cursor = conn.cursor()
+
+    # Groups table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS learning_groups (
+            group_id TEXT PRIMARY KEY,
+            model_type TEXT NOT NULL,
+            dataset_name TEXT NOT NULL,
+            performance_metric REAL DEFAULT 0.0,
+            member_count INTEGER DEFAULT 0,
+            max_capacity INTEGER DEFAULT 10,
+            join_policy TEXT DEFAULT 'open',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Nodes table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS nodes (
+            node_id TEXT PRIMARY KEY,
+            node_address TEXT NOT NULL,
+            current_group_id TEXT,
+            local_performance REAL DEFAULT 0.0,
+            last_heartbeat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (current_group_id) REFERENCES learning_groups (group_id)
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
+
+
+# Pydantic models
+class LearningGroup(BaseModel):
+    group_id: Optional[str] = None
+    model_type: str
+    dataset_name: str
+    performance_metric: float = 0.0
+    member_count: int = 0
+    max_capacity: int = 10
+    join_policy: str = "open"
+
+
+class Node(BaseModel):
+    node_id: Optional[str] = None
+    node_address: str
+    current_group_id: Optional[str] = None
+    local_performance: float = 0.0
+
+
+class JoinRequest(BaseModel):
+    node_id: str
+    group_id: str
+
+
+# Initialize database on startup
+@app.on_event("startup")
+async def startup_event():
+    init_db()
+
+
+# Registry endpoints
+@app.post("/groups", response_model=dict)
+async def create_group(group: LearningGroup):
+    conn = sqlite3.connect('mycelium_registry.db')
+    cursor = conn.cursor()
+
+    group_id = str(uuid.uuid4())
+    cursor.execute('''
+        INSERT INTO learning_groups 
+        (group_id, model_type, dataset_name, performance_metric, max_capacity, join_policy)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (group_id, group.model_type, group.dataset_name,
+          group.performance_metric, group.max_capacity, group.join_policy))
+
+    conn.commit()
+    conn.close()
+
+    return {"group_id": group_id, "status": "created"}
+
+
+@app.get("/groups", response_model=List[dict])
+async def list_groups():
+    conn = sqlite3.connect('mycelium_registry.db')
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT * FROM learning_groups ORDER BY performance_metric DESC')
+    groups = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "group_id": g[0], "model_type": g[1], "dataset_name": g[2],
+            "performance_metric": g[3], "member_count": g[4], "max_capacity": g[5],
+            "join_policy": g[6], "created_at": g[7], "last_updated": g[8]
+        }
+        for g in groups
+    ]
+
+
+@app.post("/nodes/register", response_model=dict)
+async def register_node(node: Node):
+    conn = sqlite3.connect('mycelium_registry.db')
+    cursor = conn.cursor()
+
+    node_id = str(uuid.uuid4()) if not node.node_id else node.node_id
+    cursor.execute('''
+        INSERT OR REPLACE INTO nodes 
+        (node_id, node_address, local_performance, last_heartbeat)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ''', (node_id, node.node_address, node.local_performance))
+
+    conn.commit()
+    conn.close()
+
+    return {"node_id": node_id, "status": "registered"}
+
+
+@app.post("/groups/join", response_model=dict)
+async def join_group(request: JoinRequest):
+    conn = sqlite3.connect('mycelium_registry.db')
+    cursor = conn.cursor()
+
+    # Check if group has capacity
+    cursor.execute('SELECT member_count, max_capacity FROM learning_groups WHERE group_id = ?',
+                   (request.group_id,))
+    result = cursor.fetchone()
+
+    if not result:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    member_count, max_capacity = result
+    if member_count >= max_capacity:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Group at capacity")
+
+    # Update node's group and increment group member count
+    cursor.execute('UPDATE nodes SET current_group_id = ? WHERE node_id = ?',
+                   (request.group_id, request.node_id))
+    cursor.execute('UPDATE learning_groups SET member_count = member_count + 1 WHERE group_id = ?',
+                   (request.group_id,))
+
+    conn.commit()
+    conn.close()
+
+    return {"status": "joined", "group_id": request.group_id}
+
+
+@app.put("/groups/{group_id}/performance")
+async def update_group_performance(group_id: str, performance: dict):
+    conn = sqlite3.connect('mycelium_registry.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        UPDATE learning_groups 
+        SET performance_metric = ?, last_updated = CURRENT_TIMESTAMP 
+        WHERE group_id = ?
+    ''', (performance["metric"], group_id))
+
+    conn.commit()
+    conn.close()
+
+    return {"status": "updated"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+# ===========================================
+# 2. MYCELIUM NET NODE (mycelium_node.py)
+# ===========================================
+
+import asyncio
+import requests
+import json
+import time
+from typing import List, Dict, Optional
+import logging
+from dataclasses import dataclass
+import threading
 import random
-import numpy as np
+
+# Flower imports
+import flwr as fl
+from flwr.client import NumPyClient
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from typing import Dict, List, Optional, Tuple
-import threading
-import socket
-import struct
-from dataclasses import dataclass, asdict
-from collections import defaultdict
-import logging
+import numpy as np
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class PeerInfo:
-    """Information about a peer in the network"""
-    peer_id: str
-    host: str
-    port: int
-    last_seen: float
-    model_hash: str = ""
+class NodeConfig:
+    registry_url: str = "http://localhost:8000"
+    node_address: str = "localhost:8080"
+    heartbeat_interval: int = 30  # seconds
+    group_evaluation_interval: int = 60  # seconds
 
 
-@dataclass
-class ModelUpdate:
-    """Represents a model update (gradients) to be shared"""
-    sender_id: str
-    gradients: Dict[str, np.ndarray]
-    timestamp: float
-    compression_ratio: float = 1.0
-    round_number: int = 0
-
-
-class SimpleModel(nn.Module):
+class SimpleNet(nn.Module):
     """Simple neural network for demonstration"""
 
-    def __init__(self, input_size: int = 784, hidden_size: int = 128, num_classes: int = 10):
-        super(SimpleModel, self).__init__()
+    def __init__(self, input_size=784, hidden_size=128, num_classes=10):
+        super(SimpleNet, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size)
-        self.relu = nn.ReLU()
         self.fc2 = nn.Linear(hidden_size, num_classes)
+        self.relu = nn.ReLU()
 
     def forward(self, x):
-        x = x.view(x.size(0), -1)  # Flatten
-        x = self.fc1(x)
-        x = self.relu(x)
+        x = self.relu(self.fc1(x))
         x = self.fc2(x)
         return x
 
 
-class GradientCompressor:
-    """Handles gradient compression to reduce bandwidth"""
+class MyceliumFlowerClient(NumPyClient):
+    """Flower client that integrates with Mycelium Net"""
 
-    @staticmethod
-    def top_k_compression(gradients: Dict[str, torch.Tensor], k_ratio: float = 0.1) -> Tuple[
-        Dict[str, np.ndarray], float]:
-        """Compress gradients by keeping only top-k values"""
-        compressed = {}
-        total_params = 0
-        kept_params = 0
+    def __init__(self, model, trainloader, testloader, node):
+        self.model = model
+        self.trainloader = trainloader
+        self.testloader = testloader
+        self.node = node
 
-        for name, grad in gradients.items():
-            if grad is None:
-                continue
+    def get_parameters(self, config):
+        return [val.cpu().numpy() for _, val in self.model.state_dict().items()]
 
-            grad_flat = grad.flatten()
-            total_params += len(grad_flat)
+    def set_parameters(self, parameters):
+        params_dict = zip(self.model.state_dict().keys(), parameters)
+        state_dict = {k: torch.tensor(v) for k, v in params_dict}
+        self.model.load_state_dict(state_dict, strict=True)
 
-            # Keep top k% of gradients by magnitude
-            k = max(1, int(len(grad_flat) * k_ratio))
-            _, indices = torch.topk(torch.abs(grad_flat), k)
+    def fit(self, parameters, config):
+        self.set_parameters(parameters)
 
-            # Create sparse representation
-            sparse_grad = torch.zeros_like(grad_flat)
-            sparse_grad[indices] = grad_flat[indices]
-
-            compressed[name] = {
-                'values': sparse_grad.numpy(),
-                'shape': grad.shape
-            }
-            kept_params += k
-
-        compression_ratio = kept_params / total_params if total_params > 0 else 1.0
-        return compressed, compression_ratio
-
-    @staticmethod
-    def decompress_gradients(compressed: Dict[str, np.ndarray]) -> Dict[str, torch.Tensor]:
-        """Decompress gradients back to torch tensors"""
-        decompressed = {}
-        for name, data in compressed.items():
-            if isinstance(data, dict) and 'values' in data:
-                values = torch.from_numpy(data['values']).float()
-                decompressed[name] = values.reshape(data['shape'])
-            else:
-                decompressed[name] = torch.from_numpy(data).float()
-        return decompressed
-
-
-class P2PNetwork:
-    """Handles P2P networking for the federated learning system"""
-
-    def __init__(self, host: str = 'localhost', port: int = 8000):
-        self.host = host
-        self.port = port
-        self.peer_id = self._generate_peer_id()
-        self.peers: Dict[str, PeerInfo] = {}
-        self.server_socket = None
-        self.running = False
-        self.message_handlers = {}
-
-    def _generate_peer_id(self) -> str:
-        """Generate unique peer ID"""
-        return hashlib.sha256(f"{self.host}:{self.port}:{time.time()}".encode()).hexdigest()[:16]
-
-    async def start_server(self):
-        """Start the P2P server"""
-        try:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind((self.host, self.port))
-            self.server_socket.listen(5)
-            self.server_socket.setblocking(False)  # Make non-blocking
-            self.running = True
-
-            logger.info(f"P2P server started on {self.host}:{self.port} (ID: {self.peer_id})")
-
-            while self.running:
-                try:
-                    # Use asyncio to handle non-blocking socket
-                    await asyncio.sleep(0.1)  # Small delay to prevent busy waiting
-
-                    try:
-                        client_socket, addr = self.server_socket.accept()
-                        client_socket.setblocking(False)
-                        threading.Thread(target=self._handle_client, args=(client_socket,)).start()
-                    except socket.error:
-                        # No connection available, continue
-                        continue
-
-                except Exception as e:
-                    if self.running:
-                        logger.error(f"Server error: {e}")
-                        break
-        except Exception as e:
-            logger.error(f"Failed to start server: {e}")
-            raise
-
-    def _handle_client(self, client_socket):
-        """Handle incoming client connections"""
-        try:
-            client_socket.setblocking(True)  # Make blocking for data transfer
-
-            # Receive message length
-            length_data = client_socket.recv(4)
-            if not length_data:
-                return
-
-            message_length = struct.unpack('!I', length_data)[0]
-
-            # Receive message
-            message_data = b''
-            while len(message_data) < message_length:
-                chunk = client_socket.recv(min(4096, message_length - len(message_data)))
-                if not chunk:
-                    break
-                message_data += chunk
-
-            if len(message_data) == message_length:
-                message = pickle.loads(message_data)
-                self._process_message(message)
-
-        except Exception as e:
-            logger.error(f"Error handling client: {e}")
-        finally:
-            try:
-                client_socket.close()
-            except:
-                pass
-
-    def _process_message(self, message: Dict):
-        """Process received messages"""
-        msg_type = message.get('type')
-        if msg_type in self.message_handlers:
-            self.message_handlers[msg_type](message)
-
-    def register_handler(self, message_type: str, handler):
-        """Register message handler"""
-        self.message_handlers[message_type] = handler
-
-    async def send_message(self, peer_info: PeerInfo, message: Dict) -> bool:
-        """Send message to a peer"""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(10)  # 10 second timeout
-            sock.connect((peer_info.host, peer_info.port))
-
-            # Serialize message
-            message_data = pickle.dumps(message)
-            message_length = len(message_data)
-
-            # Send length first, then message
-            sock.send(struct.pack('!I', message_length))
-            sock.send(message_data)
-
-            sock.close()
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to send message to {peer_info.peer_id}: {e}")
-            return False
-
-    def add_peer(self, host: str, port: int, peer_id: str = None):
-        """Add a peer to the network"""
-        if not peer_id:
-            peer_id = f"{host}:{port}"
-
-        peer_info = PeerInfo(
-            peer_id=peer_id,
-            host=host,
-            port=port,
-            last_seen=time.time()
-        )
-        self.peers[peer_id] = peer_info
-        logger.info(f"Added peer: {peer_id}")
-
-    def get_active_peers(self, timeout: float = 300) -> List[PeerInfo]:
-        """Get list of active peers (seen within timeout seconds)"""
-        current_time = time.time()
-        active_peers = []
-
-        for peer in self.peers.values():
-            if current_time - peer.last_seen < timeout:
-                active_peers.append(peer)
-
-        return active_peers
-
-    def stop(self):
-        """Stop the P2P network"""
-        self.running = False
-        if self.server_socket:
-            self.server_socket.close()
-
-
-class FederatedLearningNode:
-    """Main federated learning node that combines P2P networking with ML training"""
-
-    def __init__(self, host: str = 'localhost', port: int = 8000, model_params: Dict = None):
-        self.network = P2PNetwork(host, port)
-        self.model = SimpleModel(**(model_params or {}))
-        self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
-        self.criterion = nn.CrossEntropyLoss()
-        self.compressor = GradientCompressor()
-
-        # Federated learning state
-        self.round_number = 0
-        self.local_updates = []
-        self.aggregated_gradients = {}
-        self.training_data = None
-
-        # Register message handlers
-        self.network.register_handler('model_update', self._handle_model_update)
-        self.network.register_handler('peer_discovery', self._handle_peer_discovery)
-        self.network.register_handler('training_round', self._handle_training_round)
-
-    def set_training_data(self, X: np.ndarray, y: np.ndarray, batch_size: int = 32):
-        """Set training data for the node"""
-        X_tensor = torch.FloatTensor(X)
-        y_tensor = torch.LongTensor(y)
-        dataset = TensorDataset(X_tensor, y_tensor)
-        self.training_data = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        logger.info(f"Training data set: {len(X)} samples")
-
-    def _handle_model_update(self, message: Dict):
-        """Handle incoming model updates from peers"""
-        try:
-            update = ModelUpdate(**message['data'])
-
-            # Decompress gradients
-            gradients = self.compressor.decompress_gradients(update.gradients)
-
-            # Store update for aggregation
-            self.local_updates.append({
-                'sender': update.sender_id,
-                'gradients': gradients,
-                'timestamp': update.timestamp,
-                'round': update.round_number
-            })
-
-            logger.info(f"Received model update from {update.sender_id} "
-                        f"(compression: {update.compression_ratio:.2%})")
-
-        except Exception as e:
-            logger.error(f"Error handling model update: {e}")
-
-    def _handle_peer_discovery(self, message: Dict):
-        """Handle peer discovery messages"""
-        peer_data = message['data']
-        peer_id = peer_data['peer_id']
-
-        if peer_id != self.network.peer_id:
-            self.network.add_peer(
-                host=peer_data['host'],
-                port=peer_data['port'],
-                peer_id=peer_id
-            )
-
-    def _handle_training_round(self, message: Dict):
-        """Handle training round initiation"""
-        round_data = message['data']
-        self.round_number = max(self.round_number, round_data['round_number'])
-        logger.info(f"Starting training round {self.round_number}")
-
-        # Trigger local training
-        asyncio.create_task(self.train_local_model())
-
-    async def start(self):
-        """Start the federated learning node"""
-        await self.network.start_server()
-
-    async def train_local_model(self, epochs: int = 1) -> Dict[str, torch.Tensor]:
-        """Train the local model and return gradients"""
-        if not self.training_data:
-            logger.warning("No training data set")
-            return {}
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.SGD(self.model.parameters(), lr=0.01)
 
         self.model.train()
-        initial_params = {name: param.clone() for name, param in self.model.named_parameters()}
-
-        for epoch in range(epochs):
-            for batch_idx, (data, target) in enumerate(self.training_data):
-                self.optimizer.zero_grad()
+        for epoch in range(1):  # 1 epoch per round for speed
+            for batch_idx, (data, target) in enumerate(self.trainloader):
+                optimizer.zero_grad()
                 output = self.model(data)
-                loss = self.criterion(output, target)
+                loss = criterion(output, target)
                 loss.backward()
-                self.optimizer.step()
+                optimizer.step()
 
-        # Calculate gradients (difference between final and initial parameters)
-        gradients = {}
-        for name, param in self.model.named_parameters():
-            if param.grad is not None:
-                # Use actual gradients from last batch
-                gradients[name] = param.grad.clone()
-            else:
-                # Calculate parameter difference as proxy for average gradient
-                gradients[name] = param.data - initial_params[name]
+        return self.get_parameters(config={}), len(self.trainloader), {}
 
-        logger.info(f"Local training completed for round {self.round_number}")
-        return gradients
+    def evaluate(self, parameters, config):
+        self.set_parameters(parameters)
 
-    async def share_model_update(self, gradients: Dict[str, torch.Tensor]):
-        """Share model update with peers"""
-        if not gradients:
-            return
-
-        # Compress gradients
-        compressed_gradients, compression_ratio = self.compressor.top_k_compression(gradients)
-
-        # Create update message
-        update = ModelUpdate(
-            sender_id=self.network.peer_id,
-            gradients=compressed_gradients,
-            timestamp=time.time(),
-            compression_ratio=compression_ratio,
-            round_number=self.round_number
-        )
-
-        message = {
-            'type': 'model_update',
-            'data': asdict(update)
-        }
-
-        # Send to all active peers
-        active_peers = self.network.get_active_peers()
-        success_count = 0
-
-        for peer in active_peers:
-            if await self.network.send_message(peer, message):
-                success_count += 1
-
-        logger.info(f"Shared update with {success_count}/{len(active_peers)} peers "
-                    f"(compression: {compression_ratio:.2%})")
-
-    def aggregate_updates(self):
-        """Aggregate received model updates"""
-        if not self.local_updates:
-            return
-
-        # Simple averaging of gradients
-        aggregated = defaultdict(list)
-
-        for update in self.local_updates:
-            for name, grad in update['gradients'].items():
-                aggregated[name].append(grad)
-
-        # Average gradients
-        final_gradients = {}
-        for name, grad_list in aggregated.items():
-            if grad_list:
-                stacked = torch.stack(grad_list)
-                final_gradients[name] = torch.mean(stacked, dim=0)
-
-        # Apply aggregated gradients
-        with torch.no_grad():
-            for name, param in self.model.named_parameters():
-                if name in final_gradients:
-                    param.data -= 0.01 * final_gradients[name]  # Simple gradient descent
-
-        logger.info(f"Aggregated {len(self.local_updates)} updates")
-        self.local_updates.clear()
-
-    async def run_federated_round(self):
-        """Run a complete federated learning round"""
-        logger.info(f"Starting federated learning round {self.round_number}")
-
-        # 1. Train local model
-        gradients = await self.train_local_model()
-
-        # 2. Share updates with peers
-        await self.share_model_update(gradients)
-
-        # 3. Wait for peer updates (in practice, you'd want more sophisticated synchronization)
-        await asyncio.sleep(10)
-
-        # 4. Aggregate received updates
-        self.aggregate_updates()
-
-        self.round_number += 1
-        logger.info(f"Completed federated learning round {self.round_number - 1}")
-
-    async def discover_peers(self, bootstrap_peers: List[Tuple[str, int]]):
-        """Discover peers in the network"""
-        discovery_message = {
-            'type': 'peer_discovery',
-            'data': {
-                'peer_id': self.network.peer_id,
-                'host': self.network.host,
-                'port': self.network.port
-            }
-        }
-
-        for host, port in bootstrap_peers:
-            peer_info = PeerInfo(peer_id=f"{host}:{port}", host=host, port=port, last_seen=time.time())
-            await self.network.send_message(peer_info, discovery_message)
-            self.network.add_peer(host, port)
-
-    def get_model_accuracy(self, test_data: DataLoader) -> float:
-        """Evaluate model accuracy on test data"""
+        criterion = nn.CrossEntropyLoss()
         self.model.eval()
+
+        test_loss = 0
         correct = 0
         total = 0
 
         with torch.no_grad():
-            for data, target in test_data:
-                outputs = self.model(data)
-                _, predicted = torch.max(outputs.data, 1)
+            for data, target in self.testloader:
+                output = self.model(data)
+                test_loss += criterion(output, target).item()
+                _, predicted = torch.max(output.data, 1)
                 total += target.size(0)
                 correct += (predicted == target).sum().item()
 
-        return correct / total if total > 0 else 0.0
+        accuracy = correct / total
+        self.node.local_performance = accuracy
+
+        return float(test_loss), len(self.testloader), {"accuracy": accuracy}
+
+
+class MyceliumNode:
+    """A node in the Mycelium Network"""
+
+    def __init__(self, config: NodeConfig):
+        self.config = config
+        self.node_id: Optional[str] = None
+        self.current_group_id: Optional[str] = None
+        self.local_performance: float = 0.0
+        self.model = SimpleNet()
+        self.running = False
+
+        # Generate synthetic training data for demo
+        self.trainloader, self.testloader = self._create_demo_data()
+
+    def _create_demo_data(self):
+        """Create synthetic dataset for demonstration"""
+        # Generate random data (normally you'd load real datasets)
+        X_train = torch.randn(1000, 784)
+        y_train = torch.randint(0, 10, (1000,))
+        X_test = torch.randn(200, 784)
+        y_test = torch.randint(0, 10, (200,))
+
+        train_dataset = TensorDataset(X_train, y_train)
+        test_dataset = TensorDataset(X_test, y_test)
+
+        trainloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+        testloader = DataLoader(test_dataset, batch_size=32)
+
+        return trainloader, testloader
+
+    def register_to_registry(self) -> bool:
+        """Register this node with the global registry"""
+        try:
+            response = requests.post(f"{self.config.registry_url}/nodes/register",
+                                     json={
+                                         "node_address": self.config.node_address,
+                                         "local_performance": self.local_performance
+                                     })
+            if response.status_code == 200:
+                self.node_id = response.json()["node_id"]
+                logger.info(f"Node registered with ID: {self.node_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to register node: {e}")
+        return False
+
+    def discover_groups(self) -> List[Dict]:
+        """Discover available learning groups"""
+        try:
+            response = requests.get(f"{self.config.registry_url}/groups")
+            if response.status_code == 200:
+                return response.json()
+        except Exception as e:
+            logger.error(f"Failed to discover groups: {e}")
+        return []
+
+    def join_group(self, group_id: str) -> bool:
+        """Join a specific learning group"""
+        try:
+            response = requests.post(f"{self.config.registry_url}/groups/join",
+                                     json={
+                                         "node_id": self.node_id,
+                                         "group_id": group_id
+                                     })
+            if response.status_code == 200:
+                self.current_group_id = group_id
+                logger.info(f"Joined group: {group_id}")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to join group {group_id}: {e}")
+        return False
+
+    def create_group(self, model_type: str = "SimpleNet", dataset_name: str = "synthetic") -> Optional[str]:
+        """Create a new learning group"""
+        try:
+            response = requests.post(f"{self.config.registry_url}/groups",
+                                     json={
+                                         "model_type": model_type,
+                                         "dataset_name": dataset_name,
+                                         "performance_metric": self.local_performance,
+                                         "max_capacity": 5
+                                     })
+            if response.status_code == 200:
+                group_id = response.json()["group_id"]
+                logger.info(f"Created group: {group_id}")
+                return group_id
+        except Exception as e:
+            logger.error(f"Failed to create group: {e}")
+        return None
+
+    def evaluate_group_switch(self):
+        """Evaluate whether to switch to a better performing group"""
+        groups = self.discover_groups()
+        if not groups:
+            return
+
+        # Find groups with better performance than current
+        better_groups = [g for g in groups
+                         if g["performance_metric"] > self.local_performance + 0.05  # 5% threshold
+                         and g["member_count"] < g["max_capacity"]
+                         and g["group_id"] != self.current_group_id]
+
+        if better_groups:
+            # Join the best performing group with available capacity
+            best_group = max(better_groups, key=lambda x: x["performance_metric"])
+            logger.info(f"Switching to better group {best_group['group_id']} "
+                        f"(performance: {best_group['performance_metric']:.3f})")
+            self.join_group(best_group["group_id"])
+
+    def start_federated_training(self):
+        """Start federated learning with Flower"""
+        if not self.current_group_id:
+            logger.warning("No group joined, cannot start federated training")
+            return
+
+        # Create Flower client
+        client = MyceliumFlowerClient(self.model, self.trainloader, self.testloader, self)
+
+        # Start Flower client (in a real scenario, this would connect to a Flower server)
+        # For demo purposes, we'll simulate training rounds
+        logger.info(f"Starting federated training for group {self.current_group_id}")
+
+        # Simulate training rounds
+        for round_num in range(3):
+            logger.info(f"Training round {round_num + 1}")
+
+            # Simulate getting global parameters
+            global_params = client.get_parameters({})
+
+            # Local training
+            updated_params, num_examples, metrics = client.fit(global_params, {})
+
+            # Local evaluation
+            loss, num_test_examples, eval_metrics = client.evaluate(updated_params, {})
+
+            logger.info(f"Round {round_num + 1} - Loss: {loss:.3f}, "
+                        f"Accuracy: {eval_metrics.get('accuracy', 0):.3f}")
+
+            # Update registry with new performance
+            try:
+                requests.put(f"{self.config.registry_url}/groups/{self.current_group_id}/performance",
+                             json={"metric": eval_metrics.get('accuracy', 0)})
+            except Exception as e:
+                logger.error(f"Failed to update group performance: {e}")
+
+            time.sleep(2)  # Simulate time between rounds
+
+    def heartbeat_loop(self):
+        """Send periodic heartbeats and evaluate group switches"""
+        while self.running:
+            try:
+                # Send heartbeat (re-register)
+                self.register_to_registry()
+
+                # Evaluate potential group switches
+                self.evaluate_group_switch()
+
+            except Exception as e:
+                logger.error(f"Heartbeat error: {e}")
+
+            time.sleep(self.config.heartbeat_interval)
+
+    def start(self):
+        """Start the Mycelium node"""
+        logger.info("Starting Mycelium node...")
+
+        # Register with registry
+        if not self.register_to_registry():
+            logger.error("Failed to register node")
+            return
+
+        self.running = True
+
+        # Start heartbeat in background
+        heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
+        heartbeat_thread.start()
+
+        # Try to join an existing group or create a new one
+        groups = self.discover_groups()
+        if groups:
+            # Join the best available group
+            available_groups = [g for g in groups if g["member_count"] < g["max_capacity"]]
+            if available_groups:
+                best_group = max(available_groups, key=lambda x: x["performance_metric"])
+                self.join_group(best_group["group_id"])
+
+        # If no group joined, create a new one
+        if not self.current_group_id:
+            group_id = self.create_group()
+            if group_id:
+                self.join_group(group_id)
+
+        # Start federated training
+        if self.current_group_id:
+            self.start_federated_training()
+
+        logger.info("Node started successfully")
 
     def stop(self):
-        """Stop the federated learning node"""
-        self.network.stop()
+        """Stop the node"""
+        logger.info("Stopping Mycelium node...")
+        self.running = False
 
 
-# Example usage and testing
-async def create_test_node(port: int, training_data: Tuple[np.ndarray, np.ndarray]):
-    """Create a test node with sample data"""
-    node = FederatedLearningNode(port=port)
+# ===========================================
+# 3. DEMO SCRIPT (demo.py)
+# ===========================================
 
-    # Set training data
-    X, y = training_data
-    node.set_training_data(X, y)
+def run_demo():
+    """Run a demonstration of the Mycelium Network"""
+    import subprocess
+    import time
+    import sys
 
-    # Start the node in a separate task
-    server_task = asyncio.create_task(node.start())
+    print("🌐 Starting Mycelium Net Demo")
+    print("=" * 50)
 
-    return node, server_task
+    # Start registry server
+    print("1. Starting registry server...")
+    registry_process = subprocess.Popen([
+        sys.executable, "-c",
+        """
+from registry import app
+import uvicorn
+uvicorn.run(app, host='0.0.0.0', port=8000)
+        """
+    ])
 
+    time.sleep(3)  # Wait for server to start
 
-async def run_demo():
-    """Demonstrate the P2P federated learning system"""
-    print("Starting P2P Federated Learning Demo...")
+    # Start multiple nodes
+    print("2. Starting Mycelium nodes...")
 
-    # Create synthetic data for demonstration
-    np.random.seed(42)
+    nodes = []
+    for i in range(3):
+        node = MyceliumNode(NodeConfig(
+            node_address=f"localhost:808{i}",
+            heartbeat_interval=10,
+            group_evaluation_interval=15
+        ))
+        nodes.append(node)
 
-    # Node 1 data (focused on classes 0-4)
-    X1 = np.random.randn(1000, 784)
-    y1 = np.random.randint(0, 5, 1000)
+    # Start nodes in separate threads
+    node_threads = []
+    for i, node in enumerate(nodes):
+        thread = threading.Thread(target=node.start, daemon=True)
+        thread.start()
+        node_threads.append(thread)
+        time.sleep(2)  # Stagger node starts
 
-    # Node 2 data (focused on classes 5-9)
-    X2 = np.random.randn(1000, 784)
-    y2 = np.random.randint(5, 10, 1000)
-
-    # Create test data
-    X_test = np.random.randn(200, 784)
-    y_test = np.random.randint(0, 10, 200)
-    test_dataset = TensorDataset(torch.FloatTensor(X_test), torch.LongTensor(y_test))
-    test_loader = DataLoader(test_dataset, batch_size=32)
-
-    node1 = None
-    node2 = None
+    print("3. Nodes are running and training...")
+    print("   - Check http://localhost:8000/groups for group status")
+    print("   - Press Ctrl+C to stop demo")
 
     try:
-        # Create nodes
-        print("Creating Node 1...")
-        node1 = FederatedLearningNode(port=8001)
-        node1.set_training_data(X1, y1)
-
-        print("Creating Node 2...")
-        node2 = FederatedLearningNode(port=8002)
-        node2.set_training_data(X2, y2)
-
-        # Start servers in the background
-        print("Starting servers...")
-        task1 = asyncio.create_task(node1.network.start_server())
-        await asyncio.sleep(0.5)  # Give first server time to start
-
-        task2 = asyncio.create_task(node2.network.start_server())
-        await asyncio.sleep(1)  # Give second server time to start
-
-        # Connect nodes
-        print("Connecting nodes...")
-        await node2.discover_peers([('localhost', 8001)])
-        await asyncio.sleep(2)
-
-        print(f"Node 1 peers: {len(node1.network.get_active_peers())}")
-        print(f"Node 2 peers: {len(node2.network.get_active_peers())}")
-
-        # Run federated learning rounds
-        for round_num in range(3):
-            print(f"\n--- Round {round_num + 1} ---")
-
-            # Run training rounds concurrently
-            await asyncio.gather(
-                node1.run_federated_round(),
-                node2.run_federated_round()
-            )
-
-            # Evaluate models
-            acc1 = node1.get_model_accuracy(test_loader)
-            acc2 = node2.get_model_accuracy(test_loader)
-
-            print(f"Node 1 accuracy: {acc1:.3f}")
-            print(f"Node 2 accuracy: {acc2:.3f}")
-
-        print("\nDemo completed successfully!")
-
-    except Exception as e:
-        print(f"Demo error: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        # Cleanup
-        print("Cleaning up...")
-        if node1:
-            node1.stop()
-        if node2:
-            node2.stop()
-
-        # Cancel background tasks
-        for task in [task1, task2]:
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+        # Keep demo running
+        while True:
+            time.sleep(10)
+            print(f"Demo running... {len(nodes)} nodes active")
+    except KeyboardInterrupt:
+        print("\n4. Stopping demo...")
+        for node in nodes:
+            node.stop()
+        registry_process.terminate()
+        print("Demo stopped.")
 
 
 if __name__ == "__main__":
-    # Run the demo
-    asyncio.run(run_demo())
+    # You can run different components
+    import sys
+
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "registry":
+            # Run registry server
+            exec(open("registry.py").read())
+        elif sys.argv[1] == "node":
+            # Run single node
+            node = MyceliumNode(NodeConfig())
+            node.start()
+        elif sys.argv[1] == "demo":
+            # Run full demo
+            run_demo()
+    else:
+        print("Usage:")
+        print("  python mycelium_net.py registry  # Start registry server")
+        print("  python mycelium_net.py node     # Start single node")
+        print("  python mycelium_net.py demo     # Run full demo")
+
+# ===========================================
+# 4. REQUIREMENTS (requirements.txt)
+# ===========================================
+
+"""
+fastapi>=0.104.1
+uvicorn>=0.24.0
+pydantic>=2.5.0
+requests>=2.31.0
+flwr>=1.6.0
+torch>=2.1.0
+numpy>=1.24.0
+sqlite3  # Built into Python
+"""
