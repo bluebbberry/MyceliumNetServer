@@ -57,14 +57,22 @@ Mycelium Net implements a novel meta-federated learning approach where:
 
 ### Running the Demo
 
-**Option 1: Full Demo (Recommended)**
+**Option 1: Full Demo with Visualization (Recommended)**
 ```bash
-python demo.py
+python demo_with_viz.py
 ```
 This starts:
 - Registry server on `http://localhost:8000`
-- 3 nodes that automatically discover/create groups
+- 4 nodes that automatically discover/create groups
 - Real-time federated training simulation
+- **Live visualization with network topology, performance charts, and statistics**
+- **Automatic GIF export** of the entire demo session
+
+**Option 2: Basic Demo (No Visualization)**
+```bash
+python demo.py
+```
+Basic demo without visualization.
 
 **Option 2: Manual Setup**
 
@@ -86,9 +94,36 @@ Repeat Terminal 2 for additional nodes.
 - **Group Status:** http://localhost:8000/groups
 - **Node Registration:** http://localhost:8000/nodes/register
 
-## Key Features
+## Visualization Features
 
-### 🔍 Dynamic Group Discovery
+### 🎬 Real-time Animated Dashboard
+- **Network Topology**: Visual representation of nodes and groups
+- **Performance Tracking**: Live charts showing group performance over time  
+- **Statistics Panel**: Real-time network metrics and group details
+- **Automatic GIF Export**: Creates animated GIF of the entire demo session
+
+### 📊 What You'll See
+1. **Group Formation**: Nodes clustering into performance-based groups
+2. **Dynamic Switching**: Nodes migrating to better-performing groups
+3. **Performance Evolution**: Real-time accuracy improvements across groups
+4. **Network Growth**: New groups forming as nodes join the network
+
+### 🎞️ GIF Output
+After running the demo, check `output/mycelium_net_demo.gif` for a complete animated visualization of your session.
+
+### Visualization Controls
+```bash
+# Full demo with visualization  
+python demo_with_viz.py
+
+# Visualization only (registry must be running)
+python demo_with_viz.py --viz-only
+
+# Custom duration (default: 5 minutes)
+python demo_with_viz.py --duration 180
+```
+
+## Key Features
 Nodes automatically discover existing learning groups and evaluate performance metrics to make joining decisions.
 
 ### 🚀 Adaptive Group Switching

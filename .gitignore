@@ -3,3 +3,5 @@ venv/
 final_model.pkl
 model.pkl
 __pycache__/
+mycelium_registry.db
+output/

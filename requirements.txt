@@ -5,3 +5,5 @@ requests>=2.31.0
 flwr>=1.6.0
 torch>=2.1.0
 numpy>=1.24.0
+matplotlib>=3.7.0
+imageio>=2.31.0
