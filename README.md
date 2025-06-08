@@ -1,4 +1,6 @@
-# OpenFL
+# MyceliumNetServer
+
+SPORE is a decentralized protocol where nodes register publicly and join collaborative learning groups to train shared machine learning models. Groups publish performance metrics, allowing nodes to evaluate and switch participation over time. This forms a dynamic, self-organizing ecosystem of federated learners — a global, adaptive "internet for machine learning" or in the following called the "mycelium net", because of it's similarity to the interaction and growth of fungi.
 
 A decentralized federated learning system inspired by P2P file sharing networks like Napster and collaborative computing apps like SETI@home.
 This app enables distributed machine learning across multiple nodes without requiring a central server, while optimizing bandwidth usage through gradient compression techniques.
