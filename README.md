@@ -2,6 +2,8 @@
 
 A prototype implementation of a "network of ML networks" - an internet-like protocol for federated learning where nodes can discover, join, and migrate between different learning groups based on performance metrics.
 
+![image of mycelium net](docs/image.png)
+
 ## 🧠 Concept
 
 Traditional federated learning connects nodes in fixed groups. Mycelium Net creates a **meta-layer** where:
