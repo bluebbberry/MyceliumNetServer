@@ -1,14 +1,13 @@
-import asyncio
 import requests
-import json
 import time
-from typing import List, Dict, Optional
 import logging
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 import threading
 import random
+import json
 
-# Flower imports
+# Flower AI imports
 import flwr as fl
 from flwr.client import NumPyClient
 import torch
@@ -25,14 +24,15 @@ logger = logging.getLogger(__name__)
 class NodeConfig:
     registry_url: str = "http://localhost:8000"
     node_address: str = "localhost:8080"
-    heartbeat_interval: int = 30  # seconds
-    group_evaluation_interval: int = 60  # seconds
+    heartbeat_interval: int = 5
+    performance_boost_rate: float = 0.1
+    flower_server_address: str = "localhost:8080"
 
 
 class SimpleNet(nn.Module):
-    """Simple neural network for demonstration"""
+    """Simple neural network for federated learning"""
 
-    def __init__(self, input_size=784, hidden_size=128, num_classes=10):
+    def __init__(self, input_size=784, hidden_size=64, num_classes=10):
         super(SimpleNet, self).__init__()
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, num_classes)
@@ -45,7 +45,7 @@ class SimpleNet(nn.Module):
 
 
 class MyceliumFlowerClient(NumPyClient):
-    """Flower client that integrates with Mycelium Net"""
+    """Flower client integrated with Mycelium Net"""
 
     def __init__(self, model, trainloader, testloader, node):
         self.model = model
@@ -68,7 +68,7 @@ class MyceliumFlowerClient(NumPyClient):
         optimizer = optim.SGD(self.model.parameters(), lr=0.01)
 
         self.model.train()
-        for epoch in range(1):  # 1 epoch per round for speed
+        for epoch in range(1):  # 1 epoch per round
             for batch_idx, (data, target) in enumerate(self.trainloader):
                 optimizer.zero_grad()
                 output = self.model(data)
@@ -103,26 +103,29 @@ class MyceliumFlowerClient(NumPyClient):
 
 
 class MyceliumNode:
-    """A node in the Mycelium Network"""
-
-    def __init__(self, config: NodeConfig):
+    def __init__(self, config: NodeConfig, node_name: str = None):
         self.config = config
         self.node_id: Optional[str] = None
+        self.node_name = node_name or f"Node-{random.randint(1000, 9999)}"
         self.current_group_id: Optional[str] = None
-        self.local_performance: float = 0.0
-        self.model = SimpleNet()
+        self.local_performance: float = random.uniform(0.3, 0.7)
         self.running = False
+        self.training_rounds = 0
 
-        # Generate synthetic training data for demo
-        self.trainloader, self.testloader = self._create_demo_data()
+        # Initialize model and data for Flower
+        self.model = SimpleNet()
+        self.trainloader, self.testloader = self._create_synthetic_data()
+        self.flower_client = MyceliumFlowerClient(
+            self.model, self.trainloader, self.testloader, self
+        )
 
-    def _create_demo_data(self):
+    def _create_synthetic_data(self):
         """Create synthetic dataset for demonstration"""
-        # Generate random data (normally you'd load real datasets)
-        X_train = torch.randn(1000, 784)
-        y_train = torch.randint(0, 10, (1000,))
-        X_test = torch.randn(200, 784)
-        y_test = torch.randint(0, 10, (200,))
+        # Generate random data (in practice, use real datasets)
+        X_train = torch.randn(500, 784)
+        y_train = torch.randint(0, 10, (500,))
+        X_test = torch.randn(100, 784)
+        y_test = torch.randint(0, 10, (100,))
 
         train_dataset = TensorDataset(X_train, y_train)
         test_dataset = TensorDataset(X_test, y_test)
@@ -133,7 +136,6 @@ class MyceliumNode:
         return trainloader, testloader
 
     def register_to_registry(self) -> bool:
-        """Register this node with the global registry"""
         try:
             response = requests.post(f"{self.config.registry_url}/nodes/register",
                                      json={
@@ -142,14 +144,26 @@ class MyceliumNode:
                                      })
             if response.status_code == 200:
                 self.node_id = response.json()["node_id"]
-                logger.info(f"Node registered with ID: {self.node_id}")
+                logger.info(f"{self.node_name} registered with ID: {self.node_id}")
                 return True
         except Exception as e:
-            logger.error(f"Failed to register node: {e}")
+            logger.error(f"Failed to register {self.node_name}: {e}")
         return False
 
+    def send_heartbeat(self):
+        """Send heartbeat with current performance to registry"""
+        if not self.node_id:
+            return
+
+        try:
+            response = requests.put(f"{self.config.registry_url}/nodes/{self.node_id}/performance",
+                                    json={"metric": self.local_performance})
+            if response.status_code == 200:
+                logger.debug(f"{self.node_name} heartbeat sent (perf: {self.local_performance:.3f})")
+        except Exception as e:
+            logger.error(f"Failed to send heartbeat for {self.node_name}: {e}")
+
     def discover_groups(self) -> List[Dict]:
-        """Discover available learning groups"""
         try:
             response = requests.get(f"{self.config.registry_url}/groups")
             if response.status_code == 200:
@@ -159,158 +173,124 @@ class MyceliumNode:
         return []
 
     def join_group(self, group_id: str) -> bool:
-        """Join a specific learning group"""
         try:
             response = requests.post(f"{self.config.registry_url}/groups/join",
-                                     json={
-                                         "node_id": self.node_id,
-                                         "group_id": group_id
-                                     })
+                                     json={"node_id": self.node_id, "group_id": group_id})
             if response.status_code == 200:
                 self.current_group_id = group_id
-                logger.info(f"Joined group: {group_id}")
+                logger.info(f"{self.node_name} joined group: {group_id}")
                 return True
         except Exception as e:
             logger.error(f"Failed to join group {group_id}: {e}")
         return False
 
-    def create_group(self, model_type: str = "SimpleNet", dataset_name: str = "synthetic") -> Optional[str]:
-        """Create a new learning group"""
+    def create_group(self) -> Optional[str]:
         try:
             response = requests.post(f"{self.config.registry_url}/groups",
                                      json={
-                                         "model_type": model_type,
-                                         "dataset_name": dataset_name,
+                                         "model_type": "NeuralNet",
+                                         "dataset_name": "synthetic",
                                          "performance_metric": self.local_performance,
-                                         "max_capacity": 5
+                                         "max_capacity": 3
                                      })
             if response.status_code == 200:
                 group_id = response.json()["group_id"]
-                logger.info(f"Created group: {group_id}")
+                logger.info(f"{self.node_name} created group: {group_id}")
                 return group_id
         except Exception as e:
             logger.error(f"Failed to create group: {e}")
         return None
 
+    def simulate_training(self):
+        """Simulate federated learning training with Flower"""
+        if not self.current_group_id:
+            return
+
+        # Simulate federated learning round
+        try:
+            # Get current model parameters
+            current_params = self.flower_client.get_parameters({})
+
+            # Perform local training
+            updated_params, num_examples, metrics = self.flower_client.fit(current_params, {})
+
+            # Evaluate model
+            loss, num_test_examples, eval_metrics = self.flower_client.evaluate(updated_params, {})
+
+            self.training_rounds += 1
+            accuracy = eval_metrics.get('accuracy', self.local_performance)
+
+            # Update performance with some improvement
+            self.local_performance = accuracy + random.uniform(0.01, self.config.performance_boost_rate)
+            self.local_performance = min(self.local_performance, 0.95)
+
+            logger.info(f"{self.node_name} completed training round {self.training_rounds}, "
+                        f"accuracy: {self.local_performance:.3f}")
+
+            # Update group performance in registry
+            requests.put(f"{self.config.registry_url}/groups/{self.current_group_id}/performance",
+                         json={"metric": self.local_performance})
+
+        except Exception as e:
+            logger.error(f"Training error for {self.node_name}: {e}")
+            # Fallback to simple performance boost
+            self.local_performance += random.uniform(0.01, self.config.performance_boost_rate)
+            self.local_performance = min(self.local_performance, 0.95)
+
     def evaluate_group_switch(self):
-        """Evaluate whether to switch to a better performing group"""
         groups = self.discover_groups()
         if not groups:
             return
 
-        # Find groups with better performance than current
+        # Find better performing groups
         better_groups = [g for g in groups
-                         if g["performance_metric"] > self.local_performance + 0.05  # 5% threshold
+                         if g["performance_metric"] > self.local_performance * 1.1
                          and g["member_count"] < g["max_capacity"]
                          and g["group_id"] != self.current_group_id]
 
         if better_groups:
-            # Join the best performing group with available capacity
             best_group = max(better_groups, key=lambda x: x["performance_metric"])
-            logger.info(f"Switching to better group {best_group['group_id']} "
-                        f"(performance: {best_group['performance_metric']:.3f})")
+            logger.info(f"{self.node_name} switching to group {best_group['group_id']} "
+                        f"(perf: {best_group['performance_metric']:.3f})")
             self.join_group(best_group["group_id"])
 
-    def start_federated_training(self):
-        """Start federated learning with Flower"""
-        if not self.current_group_id:
-            logger.warning("No group joined, cannot start federated training")
-            return
-
-        # Create Flower client
-        client = MyceliumFlowerClient(self.model, self.trainloader, self.testloader, self)
-
-        # Start Flower client (in a real scenario, this would connect to a Flower server)
-        # For demo purposes, we'll simulate training rounds
-        logger.info(f"Starting federated training for group {self.current_group_id}")
-
-        # Simulate training rounds
-        for round_num in range(3):
-            logger.info(f"Training round {round_num + 1}")
-
-            # Simulate getting global parameters
-            global_params = client.get_parameters({})
-
-            # Local training
-            updated_params, num_examples, metrics = client.fit(global_params, {})
-
-            # Local evaluation
-            loss, num_test_examples, eval_metrics = client.evaluate(updated_params, {})
-
-            logger.info(f"Round {round_num + 1} - Loss: {loss:.3f}, "
-                        f"Accuracy: {eval_metrics.get('accuracy', 0):.3f}")
-
-            # Update registry with new performance
-            try:
-                requests.put(f"{self.config.registry_url}/groups/{self.current_group_id}/performance",
-                             json={"metric": eval_metrics.get('accuracy', 0)})
-            except Exception as e:
-                logger.error(f"Failed to update group performance: {e}")
-
-            time.sleep(2)  # Simulate time between rounds
-
-    def heartbeat_loop(self):
-        """Send periodic heartbeats and evaluate group switches"""
+    def training_loop(self):
         while self.running:
-            try:
-                # Send heartbeat (re-register)
-                self.register_to_registry()
+            # Send heartbeat
+            self.send_heartbeat()
 
-                # Evaluate potential group switches
-                self.evaluate_group_switch()
+            # Do training
+            self.simulate_training()
 
-            except Exception as e:
-                logger.error(f"Heartbeat error: {e}")
+            # Evaluate potential group switches
+            self.evaluate_group_switch()
 
             time.sleep(self.config.heartbeat_interval)
 
     def start(self):
-        """Start the Mycelium node"""
-        logger.info("Starting Mycelium node...")
-
-        # Register with registry
         if not self.register_to_registry():
-            logger.error("Failed to register node")
             return
 
         self.running = True
 
-        # Start heartbeat in background
-        heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
-        heartbeat_thread.start()
-
-        # Try to join an existing group or create a new one
+        # Try to join existing group or create new one
         groups = self.discover_groups()
         if groups:
-            # Join the best available group
-            available_groups = [g for g in groups if g["member_count"] < g["max_capacity"]]
-            if available_groups:
-                best_group = max(available_groups, key=lambda x: x["performance_metric"])
+            available = [g for g in groups if g["member_count"] < g["max_capacity"]]
+            if available:
+                best_group = max(available, key=lambda x: x["performance_metric"])
                 self.join_group(best_group["group_id"])
 
-        # If no group joined, create a new one
         if not self.current_group_id:
             group_id = self.create_group()
             if group_id:
                 self.join_group(group_id)
 
-        # Start federated training
-        if self.current_group_id:
-            self.start_federated_training()
+        # Start training loop
+        training_thread = threading.Thread(target=self.training_loop, daemon=True)
+        training_thread.start()
 
-        logger.info("Node started successfully")
+        logger.info(f"{self.node_name} started successfully")
 
     def stop(self):
-        """Stop the node"""
-        logger.info("Stopping Mycelium node...")
         self.running = False
-
-
-if __name__ == "__main__":
-    node = MyceliumNode(NodeConfig())
-    try:
-        node.start()
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        node.stop()

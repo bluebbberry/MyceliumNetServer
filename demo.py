@@ -2,59 +2,83 @@ import subprocess
 import time
 import sys
 import threading
+import requests
+import json
 from mycelium_node import MyceliumNode, NodeConfig
 
 
-def run_demo():
-    """Run a demonstration of the Mycelium Network"""
-    print("🌐 Starting Mycelium Net Demo")
+def start_flower_servers():
+    """Start Flower servers for different groups"""
+    servers = []
+
+    # Start servers on different ports for different groups
+    for i, port in enumerate([8081, 8082, 8083]):
+        server_process = subprocess.Popen([
+            sys.executable, "flower_server.py", f"group_{i}", str(port)
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        servers.append(server_process)
+        time.sleep(1)
+
+    return servers
+
+
+def run_basic_demo():
+    """Run basic demo with Flower integration"""
+    print("🌐 Starting Mycelium Net Demo with Flower AI")
     print("=" * 50)
 
-    # Start registry server
+    # Start registry
     print("1. Starting registry server...")
     registry_process = subprocess.Popen([
         sys.executable, "registry.py"
-    ])
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    time.sleep(3)  # Wait for server to start
+    time.sleep(3)
 
-    # Start multiple nodes
-    print("2. Starting Mycelium nodes...")
+    # Start Flower servers
+    print("2. Starting Flower servers...")
+    flower_servers = start_flower_servers()
+    time.sleep(3)
 
+    # Create and start nodes
+    print("3. Starting Mycelium nodes...")
     nodes = []
-    for i in range(3):
-        node = MyceliumNode(NodeConfig(
-            node_address=f"localhost:808{i}",
-            heartbeat_interval=10,
-            group_evaluation_interval=15
-        ))
+    for i in range(4):
+        config = NodeConfig(
+            heartbeat_interval=8,  # Slower for Flower integration
+            performance_boost_rate=0.05,
+            flower_server_address=f"localhost:808{(i % 3) + 1}"  # Distribute across servers
+        )
+        node = MyceliumNode(config, f"Node-{i + 1}")
         nodes.append(node)
+        node.start()
+        time.sleep(2)
 
-    # Start nodes in separate threads
-    node_threads = []
-    for i, node in enumerate(nodes):
-        thread = threading.Thread(target=node.start, daemon=True)
-        thread.start()
-        node_threads.append(thread)
-        time.sleep(2)  # Stagger node starts
-
-    print("3. Nodes are running and training...")
-    print("   - Check http://localhost:8000/groups for group status")
-    print("   - Check http://localhost:8000/docs for API documentation")
-    print("   - Press Ctrl+C to stop demo")
+    print("4. Nodes training with Flower federated learning...")
+    print("   Press Ctrl+C to stop")
 
     try:
-        # Keep demo running
-        while True:
-            time.sleep(10)
-            print(f"Demo running... {len(nodes)} nodes active")
+        for round_num in range(15):
+            time.sleep(8)
+            # Show network state
+            try:
+                response = requests.get("http://localhost:8000/network/state")
+                if response.status_code == 200:
+                    state = response.json()
+                    print(f"\nRound {round_num + 1}:")
+                    for group in state["groups"]:
+                        members = [n["id"] for n in state["nodes"] if n["group"] == group["id"]]
+                        print(f"  Group {group['id']}: {len(members)} members, perf: {group['performance']:.3f}")
+            except:
+                pass
     except KeyboardInterrupt:
-        print("\n4. Stopping demo...")
+        print("\nStopping demo...")
         for node in nodes:
             node.stop()
         registry_process.terminate()
-        print("Demo stopped.")
+        for server in flower_servers:
+            server.terminate()
 
 
 if __name__ == "__main__":
-    run_demo()
+    run_basic_demo()

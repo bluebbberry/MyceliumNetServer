@@ -4,185 +4,111 @@ A prototype implementation of a "network of ML networks" - an internet-like prot
 
 ![image of mycelium net](docs/image.png)
 
-# Mycelium Net MVP - Meta-Federated Learning Network
+Here is a demo of the learning groups:
 
-A decentralized federated learning system that allows nodes to dynamically discover, create, and switch between learning groups based on performance metrics.
+![demo-gif](docs/mycelium_network.gif)
 
-## Overview
+## Features
 
-Mycelium Net implements a novel meta-federated learning approach where:
-- **Nodes** autonomously discover and join optimal learning groups
-- **Registry** maintains a global lookup table of groups and nodes
-- **Dynamic switching** enables nodes to migrate to better-performing groups
-- **Flower AI integration** provides robust federated learning capabilities
+- **Dynamic Group Formation**: Nodes create and join learning groups automatically
+- **Performance-Based Switching**: Nodes migrate to better-performing groups
+- **Global Registry**: Centralized discovery service for groups and nodes
+- **Real-time Visualization**: Network topology and performance tracking
 
-## Architecture
+## Quick Setup
 
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Node 1        │    │   Node 2        │    │   Node 3        │
-│                 │    │                 │    │                 │
-│ Local Model     │    │ Local Model     │    │ Local Model     │
-│ Performance     │    │ Performance     │    │ Performance     │
-│ Group Discovery │    │ Group Discovery │    │ Group Discovery │
-└─────────┬───────┘    └─────────┬───────┘    └─────────┬───────┘
-          │                      │                      │
-          └──────────────────────┼──────────────────────┘
-                                 │
-                    ┌─────────────┴─────────────┐
-                    │    Registry Server        │
-                    │                           │
-                    │ • Group Management        │
-                    │ • Node Registration       │
-                    │ • Performance Tracking    │
-                    │ • Discovery API           │
-                    └───────────────────────────┘
+1. **Install dependencies**:
+```bash
+pip install -r requirements.txt
 ```
 
-## Quick Start
-
-### Prerequisites
-
-- Python 3.8+
-- pip
-
-### Installation
-
-1. **Clone or download the files:**
-   ```bash
-   # Ensure you have these files:
-   # registry.py, mycelium_node.py, demo.py, requirements.txt
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-### Running the Demo
-
-**Option 1: Full Demo (Recommended)**
+2. **Run basic demo**:
 ```bash
 python demo.py
 ```
-This starts:
-- Registry server on `http://localhost:8000`
-- 3 nodes that automatically discover/create groups
-- Real-time federated training simulation
 
-**Option 2: Manual Setup**
-
-Terminal 1 - Start Registry:
+3. **Run with visualization** (creates animated GIF):
 ```bash
+python visualizer.py
+```
+
+## File Structure
+
+- `registry.py` - Central registry server (FastAPI)
+- `mycelium_node.py` - Individual network node with Flower client integration
+- `flower_server.py` - Flower federated learning servers
+- `demo.py` - Basic console demo with Flower integration
+- `visualizer.py` - Advanced demo with animated visualization
+- `requirements.txt` - Python dependencies (includes Flower AI & PyTorch)
+
+## How It Works
+
+1. **Registry Server** runs on `localhost:8000` and manages:
+   - Learning group discovery
+   - Node registration  
+   - Performance tracking
+
+2. **Flower Servers** run on ports `8081`, `8082`, etc., providing:
+   - Federated learning coordination
+   - Model parameter aggregation
+   - Training round management
+
+3. **Nodes** automatically:
+   - Register with the registry
+   - Connect to Flower servers for actual federated learning
+   - Train PyTorch models with real gradient updates
+   - Switch to better-performing groups based on model accuracy
+
+4. **Visualization Mode** captures network state and generates:
+   - Real-time network topology
+   - Performance evolution over time
+   - Animated GIF showing node migrations during actual FL training
+
+## Demo Modes
+
+### Basic Demo
+```bash
+python demo.py
+```
+- Console output showing group formations and switches
+- 4 nodes with **real Flower federated learning**
+- **PyTorch neural networks** training on synthetic data
+- Multiple Flower servers for different groups
+- Press Ctrl+C to stop
+
+### Visual Demo
+```bash
+python visualizer.py
+```
+- Same as basic demo plus visualization
+- Runs for 90 seconds collecting **real FL training data**
+- Generates `mycelium_network.gif` showing node switching during training
+- Opens matplotlib window with live animation
+
+### Manual Components
+```bash
+# Start registry only
 python registry.py
+
+# Start individual Flower server
+python flower_server.py group_1 8081
+
+# Check API at http://localhost:8000/docs
 ```
-
-Terminal 2 - Start Node:
-```bash
-python mycelium_node.py
-```
-
-Repeat Terminal 2 for additional nodes.
-
-### Monitoring
-
-- **API Documentation:** http://localhost:8000/docs
-- **Group Status:** http://localhost:8000/groups
-- **Node Registration:** http://localhost:8000/nodes/register
-
-## Key Features
-
-### 🔍 Dynamic Group Discovery
-Nodes automatically discover existing learning groups and evaluate performance metrics to make joining decisions.
-
-### 🚀 Adaptive Group Switching
-Nodes continuously monitor group performance and migrate to better-performing groups when beneficial.
-
-### 🌐 Decentralized Architecture
-No single point of failure - nodes can create new groups independently.
-
-### 🤖 Flower AI Integration
-Built on top of Flower's robust federated learning framework for production-ready ML training.
-
-### 📊 Performance Tracking
-Real-time monitoring of group and node performance metrics with automatic registry updates.
-
-## Configuration
-
-### Node Configuration
-```python
-config = NodeConfig(
-    registry_url="http://localhost:8000",
-    node_address="localhost:8080",
-    heartbeat_interval=30,  # seconds
-    group_evaluation_interval=60  # seconds
-)
-```
-
-### Group Parameters
-- **Max Capacity:** 5 nodes per group (configurable)
-- **Performance Threshold:** 5% improvement required for group switching
-- **Join Policy:** Open (can be extended to invite-only)
 
 ## API Endpoints
 
-### Registry Server (Port 8000)
+- `GET /groups` - List all learning groups
+- `POST /groups` - Create new group
+- `POST /nodes/register` - Register node
+- `POST /groups/join` - Join group
+- `GET /network/state` - Get complete network state
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST   | `/groups` | Create new learning group |
-| GET    | `/groups` | List all groups with metrics |
-| POST   | `/nodes/register` | Register/update node |
-| POST   | `/groups/join` | Join specific group |
-| PUT    | `/groups/{id}/performance` | Update group performance |
+## Customization
 
-## Demo Output
+Edit node behavior in `mycelium_node.py`:
+- `heartbeat_interval` - How often nodes evaluate group switches
+- `performance_boost_rate` - Learning improvement rate
+- Group capacity and performance thresholds
 
-```
-🌐 Starting Mycelium Net Demo
-==================================================
-1. Starting registry server...
-2. Starting Mycelium nodes...
-3. Nodes are running and training...
-   - Check http://localhost:8000/groups for group status
-   - Check http://localhost:8000/docs for API documentation
-   - Press Ctrl+C to stop demo
-
-Demo running... 3 nodes active
-```
-
-## Extending the System
-
-### Custom Models
-Replace `SimpleNet` in `mycelium_node.py` with your own PyTorch models.
-
-### Real Datasets
-Replace the synthetic data generation in `_create_demo_data()` with actual dataset loading.
-
-### Advanced Aggregation
-Implement custom aggregation strategies in the Flower client.
-
-### Security
-Add authentication, encryption, and secure communication protocols.
-
-## Troubleshooting
-
-**Port conflicts:** Change ports in configuration if 8000/8080 are in use.
-
-**Dependencies:** Ensure PyTorch is properly installed for your system.
-
-**Firewall:** Check that ports are accessible if running across networks.
-
-**Database:** SQLite file is created automatically - delete `mycelium_registry.db` to reset.
-
-## License
-
-Open source - feel free to modify and extend for your use cases.
-
-## Next Steps
-
-- Implement Byzantine fault tolerance
-- Add support for heterogeneous models
-- Integrate with real-world datasets (CIFAR-10, ImageNet)
-- Add web dashboard for monitoring
-- Implement advanced group selection algorithms
+The system demonstrates emergent behavior where high-performing groups attract more nodes, while nodes continuously seek better learning opportunities.

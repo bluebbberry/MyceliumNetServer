@@ -75,6 +75,63 @@ async def startup_event():
     init_db()
 
 
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+
+# NEW: Network state endpoint for visualization
+@app.get("/network/state")
+async def get_network_state():
+    """Get current network state for visualization"""
+    conn = sqlite3.connect('mycelium_registry.db')
+    cursor = conn.cursor()
+
+    # Get all groups
+    cursor.execute('SELECT * FROM learning_groups')
+    groups_data = cursor.fetchall()
+
+    # Get all nodes
+    cursor.execute('SELECT * FROM nodes')
+    nodes_data = cursor.fetchall()
+
+    conn.close()
+
+    # Format for visualizer
+    groups = []
+    for g in groups_data:
+        groups.append({
+            "id": g[0],  # group_id
+            "performance": float(g[3]),  # performance_metric
+            "members": [],  # Will be populated below
+            "model_type": g[1],
+            "dataset_name": g[2],
+            "member_count": g[4],
+            "max_capacity": g[5]
+        })
+
+    nodes = []
+    for n in nodes_data:
+        nodes.append({
+            "id": n[0],  # node_id
+            "performance": float(n[3]),  # local_performance
+            "group": n[2],  # current_group_id
+            "address": n[1],  # node_address
+            "last_heartbeat": n[4]
+        })
+
+    # Add member lists to groups
+    for group in groups:
+        group["members"] = [n["id"] for n in nodes if n["group"] == group["id"]]
+
+    return {
+        "groups": groups,
+        "nodes": nodes,
+        "timestamp": datetime.now().isoformat()
+    }
+
+
 # Registry endpoints
 @app.post("/groups", response_model=dict)
 async def create_group(group: LearningGroup):
@@ -132,6 +189,25 @@ async def register_node(node: Node):
     return {"node_id": node_id, "status": "registered"}
 
 
+@app.get("/nodes", response_model=List[dict])
+async def list_nodes():
+    """Get all registered nodes"""
+    conn = sqlite3.connect('mycelium_registry.db')
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT * FROM nodes ORDER BY last_heartbeat DESC')
+    nodes = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "node_id": n[0], "node_address": n[1], "current_group_id": n[2],
+            "local_performance": n[3], "last_heartbeat": n[4]
+        }
+        for n in nodes
+    ]
+
+
 @app.post("/groups/join", response_model=dict)
 async def join_group(request: JoinRequest):
     conn = sqlite3.connect('mycelium_registry.db')
@@ -151,7 +227,14 @@ async def join_group(request: JoinRequest):
         conn.close()
         raise HTTPException(status_code=400, detail="Group at capacity")
 
-    # Update node's group and increment group member count
+    # Check if node was in another group and decrement that group's count
+    cursor.execute('SELECT current_group_id FROM nodes WHERE node_id = ?', (request.node_id,))
+    old_group = cursor.fetchone()
+    if old_group and old_group[0]:
+        cursor.execute('UPDATE learning_groups SET member_count = member_count - 1 WHERE group_id = ?',
+                       (old_group[0],))
+
+    # Update node's group and increment new group member count
     cursor.execute('UPDATE nodes SET current_group_id = ? WHERE node_id = ?',
                    (request.group_id, request.node_id))
     cursor.execute('UPDATE learning_groups SET member_count = member_count + 1 WHERE group_id = ?',
@@ -173,6 +256,24 @@ async def update_group_performance(group_id: str, performance: dict):
         SET performance_metric = ?, last_updated = CURRENT_TIMESTAMP 
         WHERE group_id = ?
     ''', (performance["metric"], group_id))
+
+    conn.commit()
+    conn.close()
+
+    return {"status": "updated"}
+
+
+@app.put("/nodes/{node_id}/performance")
+async def update_node_performance(node_id: str, performance: dict):
+    """Update node performance"""
+    conn = sqlite3.connect('mycelium_registry.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        UPDATE nodes 
+        SET local_performance = ?, last_heartbeat = CURRENT_TIMESTAMP 
+        WHERE node_id = ?
+    ''', (performance["metric"], node_id))
 
     conn.commit()
     conn.close()
