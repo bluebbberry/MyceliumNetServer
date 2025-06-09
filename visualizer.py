@@ -23,14 +23,12 @@ class NetworkVisualizer:
 
         while self.running:
             try:
-                # First, test if the registry is accessible
                 response = requests.get(f"{self.registry_url}/network/state", timeout=5)
 
                 if response.status_code == 200:
                     state = response.json()
                     timestamp = time.time()
 
-                    # Validate the state structure
                     if "groups" in state and "nodes" in state:
                         self.history.append({
                             "timestamp": timestamp,
@@ -40,7 +38,6 @@ class NetworkVisualizer:
                         print(
                             f"✓ Collected data point {len(self.history)}: {len(state['groups'])} groups, {len(state['nodes'])} nodes")
 
-                        # Keep only last 50 snapshots
                         if len(self.history) > 50:
                             self.history.pop(0)
                     else:
@@ -51,36 +48,18 @@ class NetworkVisualizer:
                     print(f"✗ Data collection failed: {error_msg}")
                     self.collection_errors.append(error_msg)
 
-            except requests.exceptions.ConnectionError as e:
-                error_msg = f"Connection error - Registry not accessible at {self.registry_url}"
-                print(f"✗ {error_msg}")
-                self.collection_errors.append(error_msg)
-
-            except requests.exceptions.Timeout as e:
-                error_msg = f"Timeout error - Registry not responding"
-                print(f"✗ {error_msg}")
-                self.collection_errors.append(error_msg)
-
             except Exception as e:
-                error_msg = f"Unexpected error: {str(e)}"
-                print(f"✗ Data collection error: {error_msg}")
+                error_msg = f"Data collection error: {str(e)}"
+                print(f"✗ {error_msg}")
                 self.collection_errors.append(error_msg)
 
             time.sleep(2)
 
     def test_registry_connection(self):
-        """Test if registry is accessible and has the required endpoint"""
+        """Test if registry is accessible"""
         print(f"Testing connection to registry at {self.registry_url}...")
 
         try:
-            # Test basic connectivity
-            response = requests.get(f"{self.registry_url}/health", timeout=5)
-            print(f"Health check: {response.status_code}")
-        except:
-            print("Health endpoint not available")
-
-        try:
-            # Test the network state endpoint
             response = requests.get(f"{self.registry_url}/network/state", timeout=5)
             if response.status_code == 200:
                 data = response.json()
@@ -88,14 +67,14 @@ class NetworkVisualizer:
                     f"✓ Network state endpoint working: {len(data.get('groups', []))} groups, {len(data.get('nodes', []))} nodes")
                 return True
             else:
-                print(f"✗ Network state endpoint returned {response.status_code}: {response.text}")
+                print(f"✗ Network state endpoint returned {response.status_code}")
                 return False
         except Exception as e:
             print(f"✗ Cannot connect to network state endpoint: {e}")
             return False
 
     def create_network_graph(self, state):
-        """Create networkx graph from state - FIXED VERSION"""
+        """Create networkx graph from state"""
         G = nx.Graph()
 
         # Add group nodes
@@ -111,76 +90,18 @@ class NetworkVisualizer:
                        type="node",
                        performance=node.get("performance", 0.0))
 
-            # Only add edge if node has a group
             if node.get("group"):
                 G.add_edge(f"N_{node['id']}", f"G_{node['group']}")
 
         return G
 
-    def create_dummy_data(self):
-        """Create some dummy data for testing visualization - FIXED VERSION"""
-        print("Creating dummy data for testing...")
-
-        # Clear any existing history
-        self.history = []
-
-        for i in range(10):
-            timestamp = time.time() + i * 2
-
-            # Create dummy state with exactly 4 nodes and 2 groups
-            state = {
-                "groups": [
-                    {
-                        "id": "group_0",
-                        "performance": 0.5 + 0.1 * np.sin(i * 0.5),
-                        "members": ["Node-1", "Node-2"],
-                        "model_type": "NeuralNet",
-                        "dataset_name": "synthetic"
-                    },
-                    {
-                        "id": "group_1",
-                        "performance": 0.6 + 0.1 * np.cos(i * 0.5),
-                        "members": ["Node-3", "Node-4"],
-                        "model_type": "NeuralNet",
-                        "dataset_name": "synthetic"
-                    }
-                ],
-                "nodes": [
-                    {"id": "Node-1", "performance": 0.7 + 0.05 * np.sin(i * 0.3), "group": "group_0"},
-                    {"id": "Node-2", "performance": 0.8 + 0.05 * np.cos(i * 0.3), "group": "group_0"},
-                    {"id": "Node-3", "performance": 0.6 + 0.05 * np.sin(i * 0.4), "group": "group_1"},
-                    {"id": "Node-4", "performance": 0.9 + 0.05 * np.cos(i * 0.4), "group": "group_1"}
-                ]
-            }
-
-            self.history.append({
-                "timestamp": timestamp,
-                "groups": state["groups"],
-                "nodes": state["nodes"]
-            })
-
     def animate_network(self, save_gif=True):
-        """Create animated visualization - FIXED VERSION"""
+        """Create animated visualization"""
         if not self.history:
             print("No data collected yet")
-            print("Collection errors:", self.collection_errors)
-
-            # Offer to create dummy visualization
-            create_dummy = input("Create dummy visualization for testing? (y/n): ").lower().strip()
-            if create_dummy == 'y':
-                self.create_dummy_data()
-            else:
-                return
+            return
 
         print(f"Creating animation with {len(self.history)} data points...")
-
-        # Debug: Print first data point to check structure
-        if self.history:
-            print(f"First data point: {len(self.history[0]['groups'])} groups, {len(self.history[0]['nodes'])} nodes")
-            for i, group in enumerate(self.history[0]['groups']):
-                print(f"  Group {i}: {group['id']} with {len(group.get('members', []))} members")
-            for i, node in enumerate(self.history[0]['nodes']):
-                print(f"  Node {i}: {node['id']} in group {node.get('group', 'None')}")
 
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
 
@@ -193,11 +114,6 @@ class NetworkVisualizer:
 
             state = self.history[frame]
             G = self.create_network_graph(state)
-
-            # Debug: Print graph info
-            if frame == 0:
-                print(f"Graph has {G.number_of_nodes()} nodes and {G.number_of_edges()} edges")
-                print(f"Nodes: {list(G.nodes())}")
 
             # Network visualization
             pos = {}
@@ -215,14 +131,12 @@ class NetworkVisualizer:
                 group_neighbors = [n for n in G.neighbors(node) if n.startswith('G_')]
                 if group_neighbors:
                     group_pos = pos[group_neighbors[0]]
-                    # Create small offset for nodes around group
                     node_index = node_nodes.index(node)
                     offset_angle = 2 * np.pi * node_index / len(node_nodes)
                     offset_radius = 0.5
                     offset = (offset_radius * np.cos(offset_angle), offset_radius * np.sin(offset_angle))
                     pos[node] = (group_pos[0] + offset[0], group_pos[1] + offset[1])
                 else:
-                    # Position unconnected nodes randomly
                     pos[node] = (np.random.uniform(-3, 3), np.random.uniform(-3, 3))
 
             # Draw network
@@ -310,16 +224,14 @@ class NetworkVisualizer:
                 print("✓ Animation saved as mycelium_network.gif!")
             except Exception as e:
                 print(f"✗ Error saving GIF: {e}")
-                print("Showing animation instead...")
 
         plt.tight_layout()
         plt.show()
 
     def start_collection(self):
         """Start data collection in background"""
-        # Test connection first
         if not self.test_registry_connection():
-            print("⚠ Registry connection failed - data collection may not work")
+            print("⚠ Registry connection failed")
 
         self.running = True
         self.collection_thread = threading.Thread(target=self.collect_data, daemon=True)
@@ -328,18 +240,42 @@ class NetworkVisualizer:
     def stop_collection(self):
         """Stop data collection"""
         self.running = False
-        if hasattr(self, 'collection_thread'):
-            self.collection_thread.join(timeout=5)
+
+
+def start_flower_server():
+    """Start Flower server"""
+    import flwr as fl
+
+    def weighted_average(metrics):
+        """Aggregate function for evaluation metrics"""
+        accuracies = [num_examples * m["accuracy"] for num_examples, m in metrics]
+        examples = [num_examples for num_examples, _ in metrics]
+        return {"accuracy": sum(accuracies) / sum(examples)}
+
+    # Define strategy
+    strategy = fl.server.strategy.FedAvg(
+        min_fit_clients=2,
+        min_evaluate_clients=2,
+        min_available_clients=2,
+        evaluate_metrics_aggregation_fn=weighted_average,
+    )
+
+    # Start server
+    fl.server.start_server(
+        server_address="[::]:8080",
+        config=fl.server.ServerConfig(num_rounds=10),
+        strategy=strategy,
+    )
 
 
 def run_visual_demo():
-    """Run demo with Flower integration and visualization"""
+    """Run demo with real Flower federated learning"""
     import subprocess
     import time
     import os
 
-    print("🎬 Starting Mycelium Net Visual Demo with Flower AI")
-    print("=" * 50)
+    print("🎬 Starting Mycelium Net Visual Demo with Real Flower FL")
+    print("=" * 55)
 
     processes = []
 
@@ -356,9 +292,9 @@ uvicorn.run(app, host='0.0.0.0', port=8000)
 """
         ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         processes.append(registry_process)
-        time.sleep(5)  # Give registry more time to start
+        time.sleep(5)
 
-        # Test registry connection
+        # Test registry
         print("Testing registry connection...")
         import requests
         try:
@@ -367,39 +303,66 @@ uvicorn.run(app, host='0.0.0.0', port=8000)
         except Exception as e:
             print(f"✗ Registry connection failed: {e}")
 
+        # Start Flower server
+        print("Starting Flower server...")
+        flower_server_process = subprocess.Popen([
+            sys.executable, "-c", """
+import flwr as fl
+
+def weighted_average(metrics):
+    accuracies = [num_examples * m["accuracy"] for num_examples, m in metrics]
+    examples = [num_examples for num_examples, _ in metrics]
+    return {"accuracy": sum(accuracies) / sum(examples)}
+
+strategy = fl.server.strategy.FedAvg(
+    min_fit_clients=2,
+    min_evaluate_clients=2, 
+    min_available_clients=2,
+    evaluate_metrics_aggregation_fn=weighted_average,
+)
+
+fl.server.start_server(
+    server_address="[::]:8080",
+    config=fl.server.ServerConfig(num_rounds=15),
+    strategy=strategy,
+)
+"""
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        processes.append(flower_server_process)
+        time.sleep(3)
+
         # Start visualizer
         print("Starting visualizer...")
         visualizer = NetworkVisualizer()
         visualizer.start_collection()
         time.sleep(2)
 
-        # Start nodes
-        print("Starting nodes...")
+        # Start nodes with real Flower integration
+        print("Starting nodes with Flower clients...")
         try:
             from mycelium_node import MyceliumNode, NodeConfig
             nodes = []
             for i in range(4):
                 config = NodeConfig(
-                    heartbeat_interval=3,  # Faster heartbeats for better visualization
+                    heartbeat_interval=3,
                     performance_boost_rate=0.08,
-                    flower_server_address=f"localhost:808{(i % 2) + 1}"
                 )
                 node = MyceliumNode(config, f"Node-{i + 1}")
                 nodes.append(node)
                 node.start()
-                time.sleep(1)
+                time.sleep(2)  # Stagger node starts
 
-            print("Collecting data for 60 seconds with training...")
-            time.sleep(60)
+            print("Running federated learning for 90 seconds...")
+            time.sleep(90)
 
-            print("Stopping nodes and creating visualization...")
+            print("Stopping nodes...")
             for node in nodes:
                 node.stop()
 
         except ImportError as e:
             print(f"Could not import mycelium_node: {e}")
-            print("Running without nodes for 30 seconds...")
-            time.sleep(30)
+            print("Running registry-only demo...")
+            time.sleep(60)
 
         visualizer.stop_collection()
         print(f"Collected {len(visualizer.history)} data points")
@@ -407,14 +370,11 @@ uvicorn.run(app, host='0.0.0.0', port=8000)
         if len(visualizer.history) > 0:
             visualizer.animate_network(save_gif=True)
         else:
-            print("No data collected - trying dummy visualization...")
-            visualizer.create_dummy_data()
-            visualizer.animate_network(save_gif=True)
+            print("No data collected")
 
     except KeyboardInterrupt:
         print("\nStopping demo...")
     finally:
-        # Cleanup
         print("Cleaning up processes...")
         for process in processes:
             try:
