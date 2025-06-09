@@ -6,7 +6,7 @@ A prototype implementation of a "network of ML networks" - an internet-like prot
 
 Here is a demo of the learning groups:
 
-![demo-gif](docs/mycelium_network.gif)
+![demo-gif](docs/demo.gif)
 
 ## Features
 
