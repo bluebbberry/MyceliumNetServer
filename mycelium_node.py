@@ -111,6 +111,7 @@ class MyceliumNode:
         self.local_performance: float = random.uniform(0.3, 0.7)
         self.running = False
         self.training_rounds = 0
+        self.flower_thread = None
 
         # Initialize model and data for Flower
         self.model = SimpleNet()
@@ -201,12 +202,28 @@ class MyceliumNode:
             logger.error(f"Failed to create group: {e}")
         return None
 
+    def start_flower_client(self):
+        """Start Flower client in separate thread"""
+
+        def client_fn(cid: str):
+            return self.flower_client
+
+        try:
+            # Use simulation for simplicity - in production, connect to actual server
+            fl.client.start_numpy_client(
+                server_address="[::]:8080",  # Default Flower server address
+                client=self.flower_client
+            )
+        except Exception as e:
+            logger.error(f"Flower client error for {self.node_name}: {e}")
+            # Fallback to simulated training
+            self.simulate_training()
+
     def simulate_training(self):
-        """Simulate federated learning training with Flower"""
+        """Simulate federated learning training"""
         if not self.current_group_id:
             return
 
-        # Simulate federated learning round
         try:
             # Get current model parameters
             current_params = self.flower_client.get_parameters({})
@@ -220,9 +237,8 @@ class MyceliumNode:
             self.training_rounds += 1
             accuracy = eval_metrics.get('accuracy', self.local_performance)
 
-            # Update performance with some improvement
-            self.local_performance = accuracy + random.uniform(0.01, self.config.performance_boost_rate)
-            self.local_performance = min(self.local_performance, 0.95)
+            # Update performance with improvement
+            self.local_performance = min(accuracy + random.uniform(0.01, self.config.performance_boost_rate), 0.95)
 
             logger.info(f"{self.node_name} completed training round {self.training_rounds}, "
                         f"accuracy: {self.local_performance:.3f}")
@@ -233,9 +249,8 @@ class MyceliumNode:
 
         except Exception as e:
             logger.error(f"Training error for {self.node_name}: {e}")
-            # Fallback to simple performance boost
-            self.local_performance += random.uniform(0.01, self.config.performance_boost_rate)
-            self.local_performance = min(self.local_performance, 0.95)
+            # Fallback performance boost
+            self.local_performance = min(self.local_performance + random.uniform(0.01, 0.05), 0.95)
 
     def evaluate_group_switch(self):
         groups = self.discover_groups()
@@ -259,7 +274,7 @@ class MyceliumNode:
             # Send heartbeat
             self.send_heartbeat()
 
-            # Do training
+            # Do training (either real Flower or simulated)
             self.simulate_training()
 
             # Evaluate potential group switches
@@ -285,6 +300,10 @@ class MyceliumNode:
             group_id = self.create_group()
             if group_id:
                 self.join_group(group_id)
+
+        # Start Flower client in background
+        self.flower_thread = threading.Thread(target=self.start_flower_client, daemon=True)
+        self.flower_thread.start()
 
         # Start training loop
         training_thread = threading.Thread(target=self.training_loop, daemon=True)
